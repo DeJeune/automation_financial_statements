@@ -1,0 +1,115 @@
+# Python Large Language Model Application Project Rules
+
+# General Code Style
+- Follow PEP 8 style guidelines
+- Use type hints for function parameters and return values
+- Add docstrings for all modules, classes, and functions
+- Keep functions focused and under 50 lines
+- Use meaningful variable and function names
+- Handle exceptions appropriately with try/except blocks
+
+# Project Structure
+- Organize code according to the standard project structure:
+  - src/ or app/ for main application code
+  - models/ for model-related code
+  - api/ for API endpoints
+  - utils/ for utility functions
+  - config/ for configuration files
+  - tests/ for test files
+  - docs/ for documentation
+
+# Model-Related Code
+- Store model configurations in YAML/JSON files under models/configs/
+- Implement model versioning and checkpointing
+- Add input validation for model parameters
+- Include model performance metrics logging
+- Handle model loading/unloading efficiently
+- Implement proper error handling for model operations
+
+# API Design
+- Use FastAPI for REST API implementation
+- Include request/response validation
+- Add proper API documentation using OpenAPI/Swagger
+- Implement rate limiting and authentication
+- Log API requests and responses appropriately
+- Handle API errors gracefully
+
+# Testing Requirements
+- Write unit tests for all core functionality
+- Include integration tests for API endpoints
+- Add model inference tests
+- Maintain minimum 80% test coverage
+- Mock external dependencies in tests
+- Use pytest as the testing framework
+
+# Security Guidelines
+- Never commit sensitive data or credentials
+- Use environment variables for configuration
+- Implement proper authentication and authorization
+- Sanitize all user inputs
+- Follow security best practices for API endpoints
+- Regular security audits and updates
+
+# Performance Optimization
+- Implement caching where appropriate
+- Optimize model inference performance
+- Use async/await for I/O operations
+- Monitor memory usage and implement garbage collection
+- Profile code performance regularly
+- Implement batch processing where applicable
+
+# Documentation Requirements
+- Maintain up-to-date API documentation
+- Include setup and installation instructions
+- Document model capabilities and limitations
+- Add usage examples and tutorials
+- Keep changelog updated
+- Include performance benchmarks
+
+# Deployment Guidelines
+- Use Docker for containerization
+- Include CI/CD pipeline configurations
+- Implement health checks
+- Add monitoring and logging
+- Include scaling configurations
+- Document deployment procedures
+
+# Data Handling
+- Implement proper data validation
+- Use appropriate data formats (JSON, CSV, etc.)
+- Include data preprocessing pipelines
+- Handle data versioning
+- Implement data privacy measures
+- Add data cleanup procedures
+
+# Error Handling
+- Use custom exception classes
+- Implement proper error logging
+- Add error recovery mechanisms
+- Include user-friendly error messages
+- Handle API errors appropriately
+- Log stack traces for debugging
+
+# Monitoring and Logging
+- Implement structured logging
+- Add performance monitoring
+- Track model metrics
+- Monitor API health
+- Log security events
+- Implement alerting system
+
+# Code Review Guidelines
+- Review all code changes
+- Check for security vulnerabilities
+- Verify test coverage
+- Review documentation updates
+- Check performance implications
+- Ensure code style compliance
+
+# Maintenance
+- Regular dependency updates
+- Security patch management
+- Performance optimization
+- Documentation updates
+- Code cleanup and refactoring
+- Regular backups
