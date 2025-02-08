@@ -2,6 +2,7 @@ import asyncio
 import json
 import argparse
 import sys
+import traceback
 from pathlib import Path
 from typing import List, Optional
 
@@ -9,7 +10,7 @@ from typing import List, Optional
 project_root = Path(__file__).parent.parent
 sys.path.append(str(project_root))
 
-from src.utils.invoice_processor import InvoiceProcessor
+from src.processors.invoice_processor import InvoiceProcessor
 from src.utils.logger import logger
 
 async def process_single_image(image_path: Path, timeout: int = 60) -> Optional[dict]:
@@ -47,7 +48,10 @@ async def process_single_image(image_path: Path, timeout: int = 60) -> Optional[
         logger.error(f"Timeout processing {image_path.name} after {timeout} seconds")
         return None
     except Exception as e:
-        logger.error(f"Error processing {image_path.name}: {str(e)}")
+        error_msg = f"Error processing {image_path.name}: {str(e)}\n"
+        error_msg += "Stack trace:\n"
+        error_msg += traceback.format_exc()
+        logger.error(error_msg)
         return None
 
 async def process_multiple_images(image_files: List[Path], max_concurrent: int = 3) -> List[Optional[dict]]:
@@ -86,7 +90,7 @@ async def process_multiple_images(image_files: List[Path], max_concurrent: int =
 
 def get_image_files() -> List[Path]:
     """Get all image files from the images directory"""
-    image_dir = Path("src/images")
+    image_dir = Path("images")
     return sorted(list(image_dir.glob("*.jpg")) + list(image_dir.glob("*.png")))
 
 async def main() -> None:

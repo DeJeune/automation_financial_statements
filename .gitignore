@@ -1,5 +1,11 @@
-src/images/*
-
+.venv
+.pytest_cache
+images
+*.json
+*.xlsx
+*.csv
+.cursorrules
+.python-version
 # Environment variables
 .env
 .env.*
