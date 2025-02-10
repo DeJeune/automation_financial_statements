@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QFileDialog, QGroupBox, QLabel, QMessageBox,
                                QHeaderView, QApplication, QScrollArea, QSplitter,
                                QDateEdit, QDateTimeEdit, QDoubleSpinBox, QTabWidget,
-                               QTextEdit, QMenuBar, QMenu)
+                               QTextEdit, QMenuBar, QMenu, QSizePolicy)
 from PySide6.QtCore import Qt, QSize, Signal, QObject, QThread, QEvent, QDate, QDateTime, QTimer
 from PySide6.QtGui import QColor, QDropEvent, QImage, QKeyEvent, QActionGroup
 from pathlib import Path
@@ -20,15 +20,16 @@ from src.utils.logger import logger
 from src.gui.components.preview import TablePreviewDialog, ImagePreviewDialog
 from src.utils.theme_manager import ThemeManager
 import pandas as pd
+import platform
 
 REQUIRED_IMAGE_CATEGORIES = [
-    "货车帮", "滴滴加油", "国通1", "国通2"
+    "国通1", "国通2"
 ]
 REQUIRED_TABLE_CATEGORIES = [  # 必填表格
-    "油品时间统计", "油品优惠", "加油明细", "抖音"
+    "油品时间统计", "油品优惠", "加油明细",
 ]
-OPTIONAL_TABLE_CATEGORIES = ["通联"]  # 可选表格
-OPTIONAL_IMAGE_CATEGORIES = ["团油"]  # 可选图片
+OPTIONAL_TABLE_CATEGORIES = ["通联", "抖音"]  # 可选表格
+OPTIONAL_IMAGE_CATEGORIES = ["团油", "货车帮", "滴滴加油"]  # 可选图片
 ALLOWED_IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.tiff', '.bmp'}
 ALLOWED_TABLE_EXTENSIONS = {'.xlsx', '.xls', '.csv'}
 
@@ -255,6 +256,10 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
+        # 添加操作系统判断
+        self.is_windows = platform.system().lower() == 'windows'
+        self.is_macos = platform.system().lower() == 'darwin'
+
         self.image_dir = Path("images")
         self.image_dir.mkdir(parents=True, exist_ok=True)
         self.table_dir = Path("tables")
@@ -297,6 +302,9 @@ class MainWindow(QMainWindow):
         # 添加预览对话框引用
         self.preview_dialog = None
 
+        # 添加拖放事件标志
+        self.drag_acceptable = False
+
         self.init_ui()
         self.workers: List[ProcessingWorker] = []
         self.table_workers: List[TableProcessingWorker] = []
@@ -307,7 +315,7 @@ class MainWindow(QMainWindow):
     def init_ui(self):
         """Initialize the user interface"""
         self.setWindowTitle("发票处理系统")
-        self.setMinimumSize(QSize(1200, 800))
+        self.setMinimumSize(QSize(600, 400))
 
         # Create menu bar
         self._create_menu_bar()
@@ -333,29 +341,50 @@ class MainWindow(QMainWindow):
         # Create scroll area for upload section
         upload_scroll = QScrollArea()
         upload_scroll.setWidgetResizable(True)
+        upload_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarAlwaysOff)  # 禁用水平滚动条
         upload_widget = QWidget()
+        upload_widget.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Preferred)  # 让widget能够水平扩展
         upload_layout = QVBoxLayout(upload_widget)
+        upload_layout.setContentsMargins(10, 10, 10, 10)
+        upload_layout.setSpacing(10)
 
         # Output table section
         output_group = QGroupBox("输出表格")
+        output_group.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Preferred)  # 让GroupBox能够水平扩展
         output_layout = QVBoxLayout()
+        output_layout.setContentsMargins(5, 5, 5, 5)
+        output_layout.setSpacing(5)
 
         # Create table upload row
         table_row = QWidget()
         table_row.setAcceptDrops(True)
-        table_row.setProperty("dragTarget", True)  # Set property for styling
+        table_row.setProperty("dragTarget", True)
+        table_row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         row_layout = QHBoxLayout(table_row)
         row_layout.setContentsMargins(10, 5, 10, 5)
+        row_layout.setSpacing(5)  # 添加组件间距
 
         # Add row content
         self.table_status_label = QLabel("拖放表格、点击上传或按Ctrl+V粘贴")
-        upload_table_btn = QPushButton("上传")
-        upload_table_btn.setMaximumWidth(60)
+        self.table_status_label.setSizePolicy(
+            QSizePolicy.Expanding, QSizePolicy.Preferred)  # 让状态标签能够自适应宽度
+        self.table_status_label.setMinimumWidth(100)  # 减小最小宽度
 
-        # Connect signals
-        upload_table_btn.clicked.connect(
-            lambda _, c="output_table": self._upload_table_file(c))
+        upload_table_btn = QPushButton("上传")
+        upload_table_btn.setMinimumWidth(50)  # 减小按钮最小宽度
+        upload_table_btn.setMaximumWidth(80)  # 限制最大宽度
+
+        paste_table_btn = QPushButton("粘贴")
+        paste_table_btn.setMinimumWidth(50)  # 减小按钮最小宽度
+        paste_table_btn.setMaximumWidth(80)  # 限制最大宽度
+        paste_table_btn.clicked.connect(
+            lambda checked, c="output_table": self._handle_table_clipboard_paste(
+                c)
+        )
 
         # Set drag-and-drop events
         table_row.dragEnterEvent = lambda e: e.acceptProposedAction(
@@ -365,11 +394,10 @@ class MainWindow(QMainWindow):
 
         # Enable copy-paste support by installing event filter and registering the widget
         table_row.installEventFilter(self)
-        self.required_table_rows["output_table"] = (
-            table_row, self.table_status_label)
-
-        row_layout.addWidget(self.table_status_label, stretch=1)
-        row_layout.addWidget(upload_table_btn)
+        # 修改行布局中组件的添加方式
+        row_layout.addWidget(self.table_status_label, 1)  # 状态标签占用剩余空间
+        row_layout.addWidget(paste_table_btn, 0)  # 按钮不拉伸
+        row_layout.addWidget(upload_table_btn, 0)  # 按钮不拉伸
 
         output_layout.addWidget(table_row)
         output_group.setLayout(output_layout)
@@ -377,7 +405,10 @@ class MainWindow(QMainWindow):
 
         # Add date and time controls section
         date_time_group = QGroupBox("时间设置")
-        date_time_layout = QHBoxLayout()
+        date_time_layout = QVBoxLayout()  # Changed to QVBoxLayout for vertical arrangement
+
+        # First row layout
+        first_row_layout = QHBoxLayout()
 
         # Date selector
         date_label = QLabel("表格日期:")
@@ -395,6 +426,17 @@ class MainWindow(QMainWindow):
             QDateTime(self.selected_date, self.selected_work_start_time.time()))
         self.work_start_selector.dateTimeChanged.connect(
             self._on_work_start_time_changed)
+
+        # Add first row widgets
+        first_row_layout.addWidget(date_label)
+        first_row_layout.addWidget(self.date_selector)
+        first_row_layout.addSpacing(20)  # Add some space between controls
+        first_row_layout.addWidget(work_start_label)
+        first_row_layout.addWidget(self.work_start_selector)
+        first_row_layout.addStretch()  # Add stretch to push controls to the left
+
+        # Second row layout
+        second_row_layout = QHBoxLayout()
 
         # Shift time selector
         shift_time_label = QLabel("交班时间:")
@@ -415,19 +457,17 @@ class MainWindow(QMainWindow):
         self.gas_price_input.setValue(self.gas_price)  # Set initial value
         self.gas_price_input.valueChanged.connect(self._on_gas_price_changed)
 
-        # Add widgets to date_time_layout
-        date_time_layout.addWidget(date_label)
-        date_time_layout.addWidget(self.date_selector)
-        date_time_layout.addSpacing(20)  # Add some space between controls
-        date_time_layout.addWidget(work_start_label)
-        date_time_layout.addWidget(self.work_start_selector)
-        date_time_layout.addSpacing(20)  # Add some space between controls
-        date_time_layout.addWidget(shift_time_label)
-        date_time_layout.addWidget(self.shift_time_selector)
-        date_time_layout.addSpacing(20)  # Add some space between controls
-        date_time_layout.addWidget(gas_price_label)
-        date_time_layout.addWidget(self.gas_price_input)
-        date_time_layout.addStretch()  # Add stretch to push controls to the left
+        # Add second row widgets
+        second_row_layout.addWidget(shift_time_label)
+        second_row_layout.addWidget(self.shift_time_selector)
+        second_row_layout.addSpacing(20)  # Add some space between controls
+        second_row_layout.addWidget(gas_price_label)
+        second_row_layout.addWidget(self.gas_price_input)
+        second_row_layout.addStretch()  # Add stretch to push controls to the left
+
+        # Add both rows to the main date_time_layout
+        date_time_layout.addLayout(first_row_layout)
+        date_time_layout.addLayout(second_row_layout)
 
         date_time_group.setLayout(date_time_layout)
         upload_layout.addWidget(date_time_group)
@@ -437,52 +477,43 @@ class MainWindow(QMainWindow):
         required_layout = QVBoxLayout()
 
         for category in REQUIRED_IMAGE_CATEGORIES:
-            # 创建整行widget作为拖放区域
             row_widget = QWidget()
             row_widget.setAcceptDrops(True)
-            row_widget.setStyleSheet("""
-                QWidget {
-                    border: 2px dashed #aaa;
-                    border-radius: 5px;
-                    padding: 5px;
-                    margin: 2px;
-                }
-                QWidget:hover {
-                    background-color: #f0f0f0;
-                }
-            """)
-
-            # Enable focus and keyboard events
-            row_widget.setFocusPolicy(Qt.StrongFocus)
-
-            # Add event filters for hover and keyboard events
-            row_widget.installEventFilter(self)
+            row_widget.setSizePolicy(
+                QSizePolicy.Expanding, QSizePolicy.Preferred)
 
             row_layout = QHBoxLayout(row_widget)
             row_layout.setContentsMargins(10, 5, 10, 5)
+            row_layout.setSpacing(5)  # 添加组件间距
 
-            # 添加行内容
             category_label = QLabel(category)
-            category_label.setMinimumWidth(100)
-            status_label = QLabel("拖放图片、点击上传或按Ctrl+V粘贴")
-            upload_btn = QPushButton("上传")
-            upload_btn.setMaximumWidth(60)
+            category_label.setMinimumWidth(50)  # 减小最小宽度
+            category_label.setMaximumWidth(80)  # 限制最大宽度
 
-            # 连接信号
-            upload_btn.clicked.connect(
-                lambda checked, c=category: self._upload_file(c)
+            status_label = QLabel("拖放图片、点击上传或按Ctrl+V粘贴")
+            status_label.setSizePolicy(
+                QSizePolicy.Expanding, QSizePolicy.Preferred)
+            status_label.setMinimumWidth(100)  # 减小最小宽度
+
+            upload_btn = QPushButton("上传")
+            upload_btn.setMinimumWidth(50)
+            upload_btn.setMaximumWidth(80)
+
+            paste_btn = QPushButton("粘贴")
+            paste_btn.setMinimumWidth(50)
+            paste_btn.setMaximumWidth(80)
+            paste_btn.clicked.connect(
+                lambda checked, c=category: self._handle_clipboard_paste(c)
             )
 
-            # 设置拖放事件
-            row_widget.dragEnterEvent = lambda e: e.acceptProposedAction(
-            ) if e.mimeData().hasUrls() else None
             row_widget.dropEvent = lambda e, c=category: self._handle_row_drop(
                 e, c)
 
-            # 添加到布局
-            row_layout.addWidget(category_label)
-            row_layout.addWidget(status_label, stretch=1)  # 让状态标签占据剩余空间
-            row_layout.addWidget(upload_btn)
+            # 修改行布局中组件的添加方式
+            row_layout.addWidget(category_label, 0)  # 类别标签不拉伸
+            row_layout.addWidget(status_label, 1)  # 状态标签占用剩余空间
+            row_layout.addWidget(paste_btn, 0)  # 按钮不拉伸
+            row_layout.addWidget(upload_btn, 0)  # 按钮不拉伸
 
             required_layout.addWidget(row_widget)
             self.required_rows[category] = (row_widget, status_label)
@@ -498,12 +529,18 @@ class MainWindow(QMainWindow):
             # 创建整行widget作为拖放区域
             row_widget = QWidget()
             row_widget.setAcceptDrops(True)
+            row_widget.setSizePolicy(
+                QSizePolicy.Expanding, QSizePolicy.Preferred)
             row_widget.setStyleSheet("""
                 QWidget {
                     border: 2px dashed #aaa;
                     border-radius: 5px;
                     padding: 5px;
                     margin: 2px;
+                }
+                QWidget[dragTarget="true"] {
+                    background-color: #e0f0e0;
+                    border-color: #4CAF50;
                 }
                 QWidget:hover {
                     background-color: #f0f0f0;
@@ -521,14 +558,25 @@ class MainWindow(QMainWindow):
 
             # 添加行内容
             category_label = QLabel(category)
-            category_label.setMinimumWidth(100)
+            category_label.setMinimumWidth(60)
+            category_label.setSizePolicy(
+                QSizePolicy.Preferred, QSizePolicy.Preferred)
             status_label = QLabel("拖放表格、点击上传或按Ctrl+V粘贴")
+            status_label.setMinimumWidth(150)
+            status_label.setSizePolicy(
+                QSizePolicy.Preferred, QSizePolicy.Preferred)
             upload_btn = QPushButton("上传")
-            upload_btn.setMaximumWidth(60)
+            upload_btn.setMinimumWidth(60)
+            paste_btn = QPushButton("粘贴")
+            paste_btn.setMinimumWidth(60)
 
             # 连接信号
             upload_btn.clicked.connect(
                 lambda checked, c=category: self._upload_table_file(c)
+            )
+            paste_btn.clicked.connect(
+                lambda checked, c=category: self._handle_table_clipboard_paste(
+                    c)
             )
 
             # 设置拖放事件
@@ -539,7 +587,9 @@ class MainWindow(QMainWindow):
 
             # 添加到布局
             row_layout.addWidget(category_label)
-            row_layout.addWidget(status_label, stretch=1)  # 让状态标签占据剩余空间
+            row_layout.addWidget(status_label)  # 移除stretch=1
+            row_layout.addStretch()  # 添加弹性空间
+            row_layout.addWidget(paste_btn)
             row_layout.addWidget(upload_btn)
 
             required_table_layout.addWidget(row_widget)
@@ -556,6 +606,8 @@ class MainWindow(QMainWindow):
             """创建表格上传行（样式与图片不同）"""
             row_widget = QWidget()
             row_widget.setAcceptDrops(True)
+            row_widget.setSizePolicy(
+                QSizePolicy.Expanding, QSizePolicy.Preferred)
             row_widget.setStyleSheet("""
                 QWidget {
                     border: 2px dashed #aaa;
@@ -563,30 +615,45 @@ class MainWindow(QMainWindow):
                     padding: 5px;
                     margin: 2px;
                 }
-                QWidget[hovered="true"] {
+                QWidget[dragTarget="true"] {
+                    background-color: #e0f0e0;
+                    border-color: #4CAF50;
+                }
+                QWidget:hover {
                     background-color: #f0f0f0;
-                    border-color: #666;
                 }
             """)
-            row_widget.setProperty("hovered", False)
+            row_widget.setProperty("dragTarget", False)
             row_widget.setFocusPolicy(Qt.StrongFocus)
             row_widget.installEventFilter(self)
             row_layout = QHBoxLayout(row_widget)
             row_layout.setContentsMargins(10, 5, 10, 5)
             category_label = QLabel(category)
-            category_label.setMinimumWidth(100)
+            category_label.setMinimumWidth(60)
+            category_label.setSizePolicy(
+                QSizePolicy.Preferred, QSizePolicy.Preferred)
             status_label = QLabel("拖放表格、点击上传或按Ctrl+V粘贴")
+            status_label.setMinimumWidth(150)
+            status_label.setSizePolicy(
+                QSizePolicy.Preferred, QSizePolicy.Preferred)
             upload_btn = QPushButton("上传")
-            upload_btn.setMaximumWidth(60)
+            upload_btn.setMinimumWidth(60)
+            paste_btn = QPushButton("粘贴")
+            paste_btn.setMinimumWidth(60)
             upload_btn.clicked.connect(
                 lambda _, c=category: self._upload_table_file(c)
             )
+            paste_btn.clicked.connect(
+                lambda _, c=category: self._handle_table_clipboard_paste(c)
+            )
             row_widget.dragEnterEvent = lambda e: e.acceptProposedAction(
             ) if e.mimeData().hasUrls() else None
-            row_widget.dropEvent = lambda e, c=category: self._handle_table_drop(
+            row_widget.dropEvent = lambda e, c=category: self._handle_row_drop(
                 e, c)
             row_layout.addWidget(category_label)
-            row_layout.addWidget(status_label, stretch=1)
+            row_layout.addWidget(status_label)  # 移除stretch=1
+            row_layout.addStretch()  # 添加弹性空间
+            row_layout.addWidget(paste_btn)
             row_layout.addWidget(upload_btn)
 
             optional_layout.addWidget(row_widget)
@@ -596,6 +663,8 @@ class MainWindow(QMainWindow):
         for category in OPTIONAL_IMAGE_CATEGORIES:
             row_widget = QWidget()
             row_widget.setAcceptDrops(True)
+            row_widget.setSizePolicy(
+                QSizePolicy.Expanding, QSizePolicy.Preferred)
             row_widget.setStyleSheet("""
                 QWidget {
                     border: 2px dashed #aaa;
@@ -603,12 +672,15 @@ class MainWindow(QMainWindow):
                     padding: 5px;
                     margin: 2px;
                 }
-                QWidget[hovered="true"] {
+                QWidget[dragTarget="true"] {
+                    background-color: #e0f0e0;
+                    border-color: #4CAF50;
+                }
+                QWidget:hover {
                     background-color: #f0f0f0;
-                    border-color: #666;
                 }
             """)
-            row_widget.setProperty("hovered", False)
+            row_widget.setProperty("dragTarget", False)
             row_widget.setFocusPolicy(Qt.StrongFocus)
             row_widget.installEventFilter(self)
 
@@ -616,13 +688,23 @@ class MainWindow(QMainWindow):
             row_layout.setContentsMargins(10, 5, 10, 5)
 
             category_label = QLabel(category)
-            category_label.setMinimumWidth(100)
+            category_label.setMinimumWidth(60)
+            category_label.setSizePolicy(
+                QSizePolicy.Preferred, QSizePolicy.Preferred)
             status_label = QLabel("拖放图片、点击上传或按Ctrl+V粘贴")
+            status_label.setMinimumWidth(150)
+            status_label.setSizePolicy(
+                QSizePolicy.Preferred, QSizePolicy.Preferred)
             upload_btn = QPushButton("上传")
-            upload_btn.setMaximumWidth(60)
+            upload_btn.setMinimumWidth(60)
+            paste_btn = QPushButton("粘贴")
+            paste_btn.setMinimumWidth(60)
 
             upload_btn.clicked.connect(
                 lambda checked, c=category: self._upload_file(c, optional=True)
+            )
+            paste_btn.clicked.connect(
+                lambda checked, c=category: self._handle_clipboard_paste(c)
             )
 
             row_widget.dragEnterEvent = lambda e: e.acceptProposedAction(
@@ -631,7 +713,9 @@ class MainWindow(QMainWindow):
                 e, c)
 
             row_layout.addWidget(category_label)
-            row_layout.addWidget(status_label, stretch=1)
+            row_layout.addWidget(status_label)  # 移除stretch=1
+            row_layout.addStretch()  # 添加弹性空间
+            row_layout.addWidget(paste_btn)
             row_layout.addWidget(upload_btn)
 
             optional_layout.addWidget(row_widget)
@@ -762,27 +846,24 @@ class MainWindow(QMainWindow):
         style = self.theme_manager.get_theme_style()
         self.setStyleSheet(style)
 
+    def _normalize_path(self, path_str: str) -> str:
+        """根据操作系统规范化路径"""
+        if self.is_windows:
+            return path_str.replace('\\', '/')
+        return path_str
+
     def _handle_table_drop(self, event: QDropEvent, category: str):
         """处理表格文件拖放事件"""
-        urls = event.mimeData().urls()
-        if urls:
-            file_path = Path(urls[0].toLocalFile())
-            self._handle_table_upload(file_path, category)
-
-    def _upload_table_file(self, category: str):
-        """处理表格文件上传"""
         try:
-            file_path, _ = QFileDialog.getOpenFileName(
-                self,
-                "选择输出表格文件",
-                "",
-                "表格文件 (*.xlsx *.xls *.csv)"
-            )
-            if file_path:
-                self._handle_table_upload(Path(file_path), category)
+            urls = event.mimeData().urls()
+            if urls and self.drag_acceptable:
+                file_path = Path(self._normalize_path(urls[0].toLocalFile()))
+                self._handle_table_upload(file_path, category)
+                event.accept()
         except Exception as e:
-            logger.error(f"上传表格文件错误: {str(e)}")
-            QMessageBox.critical(self, "错误", f"表格上传失败: {str(e)}")
+            logger.error(f"表格拖放错误: {str(e)}")
+            QMessageBox.critical(self, "错误", f"处理拖放失败: {str(e)}")
+            event.ignore()
 
     def _handle_table_upload(self, file_path: Path, category: str):
         """处理表格文件验证和存储"""
@@ -908,24 +989,30 @@ class MainWindow(QMainWindow):
 
     def _handle_row_drop(self, event: QDropEvent, category: str):
         """处理整行拖放事件"""
-        urls = event.mimeData().urls()
-        if urls:
-            file_path = Path(urls[0].toLocalFile())
-            # 根据类别和文件类型分别处理
-            if category == "output_table" or category in REQUIRED_TABLE_CATEGORIES + OPTIONAL_TABLE_CATEGORIES:
-                # 表格文件处理
-                if file_path.suffix.lower() not in ALLOWED_TABLE_EXTENSIONS:
-                    QMessageBox.warning(
-                        self, "错误", "不支持的表格文件类型，请上传Excel或CSV文件")
-                    return
-                self._handle_table_upload(file_path, category)
-            else:
-                # 图片文件处理
-                if file_path.suffix.lower() not in ALLOWED_IMAGE_EXTENSIONS:
-                    QMessageBox.warning(
-                        self, "错误", "不支持的图片文件类型，请上传JPG、PNG或BMP文件")
-                    return
-                self._handle_file_drop(category, file_path)
+        try:
+            urls = event.mimeData().urls()
+            if urls and self.drag_acceptable:
+                file_path = Path(self._normalize_path(urls[0].toLocalFile()))
+                # 根据类别和文件类型分别处理
+                if category == "output_table" or category in REQUIRED_TABLE_CATEGORIES + OPTIONAL_TABLE_CATEGORIES:
+                    if file_path.suffix.lower() not in ALLOWED_TABLE_EXTENSIONS:
+                        QMessageBox.warning(
+                            self, "错误", "不支持的表格文件类型，请上传Excel或CSV文件")
+                        event.ignore()
+                        return
+                    self._handle_table_upload(file_path, category)
+                else:
+                    if file_path.suffix.lower() not in ALLOWED_IMAGE_EXTENSIONS:
+                        QMessageBox.warning(
+                            self, "错误", "不支持的图片文件类型，请上传JPG、PNG或BMP文件")
+                        event.ignore()
+                        return
+                    self._handle_file_drop(category, file_path)
+                event.accept()
+        except Exception as e:
+            logger.error(f"拖放错误: {str(e)}")
+            QMessageBox.critical(self, "错误", f"处理拖放失败: {str(e)}")
+            event.ignore()
 
     def _handle_file_drop(self, category: str, file_path: Path):
         """Handle image files dropped onto the widget"""
@@ -1460,101 +1547,133 @@ class MainWindow(QMainWindow):
         try:
             mime_data = self.clipboard.mimeData()
 
+            # 获取状态标签
+            status_label = None
+            for cat, (_, label) in {**self.required_table_rows, **self.optional_table_rows}.items():
+                if cat == category:
+                    status_label = label
+                    break
+
             if mime_data.hasUrls():
                 urls = mime_data.urls()
                 if urls:
-                    file_path = Path(urls[0].toLocalFile())
+                    file_path = Path(
+                        self._normalize_path(urls[0].toLocalFile()))
                     if file_path.suffix.lower() in ALLOWED_TABLE_EXTENSIONS:
                         self._handle_table_upload(file_path, category)
                         return
                     else:
                         QMessageBox.warning(self, "错误", "不支持的表格文件类型")
-                    return
+                        if status_label:
+                            status_label.setText("不支持的文件类型")
+                        return
             elif mime_data.hasText():
                 text = mime_data.text().strip()
-                if Path(text).exists():
-                    file_path = Path(text)
+                if Path(self._normalize_path(text)).exists():
+                    file_path = Path(self._normalize_path(text))
                     if file_path.suffix.lower() in ALLOWED_TABLE_EXTENSIONS:
                         self._handle_table_upload(file_path, category)
                         return
                     else:
                         QMessageBox.warning(self, "错误", "不支持的表格文件类型")
+                        if status_label:
+                            status_label.setText("不支持的文件类型")
                         return
             else:
                 QMessageBox.warning(self, "错误", "剪贴板中没有有效的表格文件")
+                if status_label:
+                    status_label.setText("无有效文件")
         except Exception as e:
             error_msg = f"粘贴表格文件错误: {str(e)}"
-            print(error_msg)  # 打印错误信息以便调试
             logger.error(error_msg)
             QMessageBox.critical(self, "错误", f"粘贴表格文件失败: {str(e)}")
+            if status_label:
+                status_label.setText("粘贴失败")
 
     def _handle_clipboard_paste(self, category: str) -> None:
         """Handle clipboard paste event for images"""
         try:
             mime_data = self.clipboard.mimeData()
+
+            # 获取状态标签
+            status_label = None
+            for cat, (_, label) in {**self.required_rows, **self.optional_rows}.items():
+                if cat == category:
+                    status_label = label
+                    break
+
             if mime_data.hasUrls():
                 urls = mime_data.urls()
                 if urls:
-                    file_path = Path(urls[0].toLocalFile())
+                    file_path = Path(
+                        self._normalize_path(urls[0].toLocalFile()))
                     if file_path.suffix.lower() in ALLOWED_IMAGE_EXTENSIONS:
                         self._handle_file_drop(category, file_path)
                         return
                     else:
                         QMessageBox.warning(self, "错误", "不支持的图片文件类型")
-                    return
+                        if status_label:
+                            status_label.setText("不支持的文件类型")
+                        return
             elif mime_data.hasText():
                 text = mime_data.text().strip()
-                if Path(text).exists():
-                    file_path = Path(text)
+                if Path(self._normalize_path(text)).exists():
+                    file_path = Path(self._normalize_path(text))
                     if file_path.suffix.lower() in ALLOWED_IMAGE_EXTENSIONS:
                         self._handle_file_drop(category, file_path)
                         return
                     else:
                         QMessageBox.warning(self, "错误", "不支持的图片文件类型")
+                        if status_label:
+                            status_label.setText("不支持的文件类型")
                         return
             elif mime_data.hasImage():
-                # 显示加载提示
-                status_label = None
-                for cat, (_, label) in {**self.required_rows, **self.optional_rows}.items():
-                    if cat == category:
-                        status_label = label
-                        break
                 if status_label:
                     status_label.setText("正在处理图片...")
-                QApplication.processEvents()  # 确保UI更新
+                QApplication.processEvents()
 
-                # 获取剪贴板图片
                 image = QImage(mime_data.imageData())
                 if not image.isNull():
                     # 检测图片格式
                     formats = mime_data.formats()
 
-                    # 默认使用png格式，因为大多数截图都是png
+                    # 默认使用PNG格式
                     extension = '.png'
                     format_name = 'PNG'
 
-                    # 根据剪贴板格式信息选择合适的格式
-                    if 'image/png' in formats:
-                        extension = '.png'
-                        format_name = 'PNG'
-                    elif 'image/jpeg' in formats:
-                        extension = '.jpg'
-                        format_name = 'JPEG'
-                    # 如果剪贴板中包含原始格式信息，尝试使用原始格式
-                    elif 'x-qt-image' in formats:
-                        format_data = mime_data.data('x-qt-image')
-                        if format_data.startswith(b'\x89PNG'):
+                    if self.is_windows:
+                        # Windows系统的格式检测
+                        if 'image/png' in formats or 'PNG' in formats:
                             extension = '.png'
                             format_name = 'PNG'
-                        elif format_data.startswith(b'\xff\xd8\xff'):
+                        elif 'image/jpeg' in formats or 'JPEG' in formats:
                             extension = '.jpg'
                             format_name = 'JPEG'
-                        elif format_data.startswith(b'GIF8'):
-                            extension = '.gif'
-                            format_name = 'GIF'
-                        elif format_data.startswith(b'BM'):
+                        elif 'image/bmp' in formats or 'BMP' in formats:
                             extension = '.bmp'
                             format_name = 'BMP'
+                    else:
+                        # macOS系统的格式检测
+                        if 'image/png' in formats:
+                            extension = '.png'
+                            format_name = 'PNG'
+                        elif 'image/jpeg' in formats:
+                            extension = '.jpg'
+                            format_name = 'JPEG'
+                        elif 'x-qt-image' in formats:
+                            format_data = mime_data.data('x-qt-image')
+                            if format_data.startswith(b'\x89PNG'):
+                                extension = '.png'
+                                format_name = 'PNG'
+                            elif format_data.startswith(b'\xff\xd8\xff'):
+                                extension = '.jpg'
+                                format_name = 'JPEG'
+                            elif format_data.startswith(b'GIF8'):
+                                extension = '.gif'
+                                format_name = 'GIF'
+                            elif format_data.startswith(b'BM'):
+                                extension = '.bmp'
+                                format_name = 'BMP'
 
                     # 生成临时文件
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1571,7 +1690,6 @@ class MainWindow(QMainWindow):
                         )
                     )
                     self.save_worker.start()
-
                 else:
                     QMessageBox.warning(self, "错误", "剪贴板中的图片无效")
                     if status_label:
@@ -1582,9 +1700,10 @@ class MainWindow(QMainWindow):
                     status_label.setText("无图片数据")
         except Exception as e:
             error_msg = f"粘贴图片错误: {str(e)}"
-            print(error_msg)  # 打印错误信息以便调试
             logger.error(error_msg)
             QMessageBox.critical(self, "错误", f"粘贴图片失败: {str(e)}")
+            if status_label:
+                status_label.setText("粘贴失败")
 
     def _handle_save_complete(self, success: bool, error_msg: str, category: str,
                               temp_path: Path, status_label: QLabel) -> None:
@@ -1791,3 +1910,20 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"导出表格错误: {str(e)}")
             QMessageBox.critical(self, "错误", f"导出表格失败: {str(e)}")
+
+    def _check_drag_data(self, mime_data, category: str) -> bool:
+        """检查拖放数据是否有效"""
+        if not mime_data.hasUrls():
+            return False
+
+        urls = mime_data.urls()
+        if not urls:
+            return False
+
+        file_path = Path(self._normalize_path(urls[0].toLocalFile()))
+
+        # 检查文件类型
+        if category == "output_table" or category in REQUIRED_TABLE_CATEGORIES + OPTIONAL_TABLE_CATEGORIES:
+            return file_path.suffix.lower() in ALLOWED_TABLE_EXTENSIONS
+        else:
+            return file_path.suffix.lower() in ALLOWED_IMAGE_EXTENSIONS
