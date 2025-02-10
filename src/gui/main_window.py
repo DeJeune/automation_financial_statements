@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QDateEdit, QDateTimeEdit, QDoubleSpinBox, QTabWidget,
                                QTextEdit, QMenuBar, QMenu, QSizePolicy)
 from PySide6.QtCore import Qt, QSize, Signal, QObject, QThread, QEvent, QDate, QDateTime, QTimer
-from PySide6.QtGui import QColor, QDropEvent, QImage, QKeyEvent, QActionGroup
+from PySide6.QtGui import QColor, QDropEvent, QImage, QKeyEvent, QActionGroup, QFont
 from pathlib import Path
 import asyncio
 import shutil
@@ -256,10 +256,17 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        # 添加操作系统判断
-        self.is_windows = platform.system().lower() == 'windows'
-        self.is_macos = platform.system().lower() == 'darwin'
-
+        
+        # 在初始化时设置默认字体和编码
+        if platform.system().lower() == 'windows':
+            # Windows系统设置
+            self.setFont(QFont('Microsoft YaHei', 9))  # 使用微软雅黑字体
+            self.is_windows = True
+        else:
+            # macOS/Linux系统设置
+            self.setFont(QFont('PingFang SC', 9))  # 使用苹方字体
+            self.is_mac = True
+            
         self.image_dir = Path("images")
         self.image_dir.mkdir(parents=True, exist_ok=True)
         self.table_dir = Path("tables")
@@ -284,6 +291,9 @@ class MainWindow(QMainWindow):
         self.update_timer.setInterval(500)  # 每500ms检查一次
         self.is_processing = False  # 标记是否正在处理文件
 
+        # Create menu bar before initializing UI
+        self.menubar = self.menuBar()
+        
         # Initialize tracking dictionaries
         self.required_rows = {}
         self.optional_rows = {}
@@ -301,10 +311,6 @@ class MainWindow(QMainWindow):
 
         # 添加预览对话框引用
         self.preview_dialog = None
-
-        # 添加拖放事件标志
-        self.drag_acceptable = False
-
         self.init_ui()
         self.workers: List[ProcessingWorker] = []
         self.table_workers: List[TableProcessingWorker] = []
@@ -361,8 +367,9 @@ class MainWindow(QMainWindow):
         # Create table upload row
         table_row = QWidget()
         table_row.setAcceptDrops(True)
-        table_row.setProperty("dragTarget", True)
         table_row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        # Enable copy-paste support by installing event filter and registering the widget
+        table_row.installEventFilter(self)
 
         row_layout = QHBoxLayout(table_row)
         row_layout.setContentsMargins(10, 5, 10, 5)
@@ -392,8 +399,6 @@ class MainWindow(QMainWindow):
         table_row.dropEvent = lambda e, c="output_table": self._handle_table_drop(
             e, c)
 
-        # Enable copy-paste support by installing event filter and registering the widget
-        table_row.installEventFilter(self)
         # 修改行布局中组件的添加方式
         row_layout.addWidget(self.table_status_label, 1)  # 状态标签占用剩余空间
         row_layout.addWidget(paste_table_btn, 0)  # 按钮不拉伸
@@ -420,8 +425,7 @@ class MainWindow(QMainWindow):
         # Work start time selector
         work_start_label = QLabel("上班时间:")
         self.work_start_selector = QDateTimeEdit()
-        self.work_start_selector.setDisplayFormat(
-            "yyyy-MM-dd HH:mm:ss")  # Show full date and time
+        self.work_start_selector.setDisplayFormat(self._get_datetime_format())
         self.work_start_selector.setDateTime(
             QDateTime(self.selected_date, self.selected_work_start_time.time()))
         self.work_start_selector.dateTimeChanged.connect(
@@ -441,8 +445,7 @@ class MainWindow(QMainWindow):
         # Shift time selector
         shift_time_label = QLabel("交班时间:")
         self.shift_time_selector = QDateTimeEdit()
-        self.shift_time_selector.setDisplayFormat(
-            "yyyy-MM-dd HH:mm:ss")  # Show full date and time
+        self.shift_time_selector.setDisplayFormat(self._get_datetime_format())
         self.shift_time_selector.setDateTime(
             QDateTime(self.selected_date, self.selected_shift_time.time()))
         self.shift_time_selector.dateTimeChanged.connect(
@@ -505,9 +508,12 @@ class MainWindow(QMainWindow):
             paste_btn.clicked.connect(
                 lambda checked, c=category: self._handle_clipboard_paste(c)
             )
-
+            row_widget.installEventFilter(self)
+            row_widget.dragEnterEvent = lambda e: e.acceptProposedAction(
+            ) if e.mimeData().hasUrls() else None
             row_widget.dropEvent = lambda e, c=category: self._handle_row_drop(
                 e, c)
+
 
             # 修改行布局中组件的添加方式
             row_layout.addWidget(category_label, 0)  # 类别标签不拉伸
@@ -531,21 +537,6 @@ class MainWindow(QMainWindow):
             row_widget.setAcceptDrops(True)
             row_widget.setSizePolicy(
                 QSizePolicy.Expanding, QSizePolicy.Preferred)
-            row_widget.setStyleSheet("""
-                QWidget {
-                    border: 2px dashed #aaa;
-                    border-radius: 5px;
-                    padding: 5px;
-                    margin: 2px;
-                }
-                QWidget[dragTarget="true"] {
-                    background-color: #e0f0e0;
-                    border-color: #4CAF50;
-                }
-                QWidget:hover {
-                    background-color: #f0f0f0;
-                }
-            """)
 
             # Enable focus and keyboard events
             row_widget.setFocusPolicy(Qt.StrongFocus)
@@ -608,22 +599,7 @@ class MainWindow(QMainWindow):
             row_widget.setAcceptDrops(True)
             row_widget.setSizePolicy(
                 QSizePolicy.Expanding, QSizePolicy.Preferred)
-            row_widget.setStyleSheet("""
-                QWidget {
-                    border: 2px dashed #aaa;
-                    border-radius: 5px;
-                    padding: 5px;
-                    margin: 2px;
-                }
-                QWidget[dragTarget="true"] {
-                    background-color: #e0f0e0;
-                    border-color: #4CAF50;
-                }
-                QWidget:hover {
-                    background-color: #f0f0f0;
-                }
-            """)
-            row_widget.setProperty("dragTarget", False)
+
             row_widget.setFocusPolicy(Qt.StrongFocus)
             row_widget.installEventFilter(self)
             row_layout = QHBoxLayout(row_widget)
@@ -665,22 +641,7 @@ class MainWindow(QMainWindow):
             row_widget.setAcceptDrops(True)
             row_widget.setSizePolicy(
                 QSizePolicy.Expanding, QSizePolicy.Preferred)
-            row_widget.setStyleSheet("""
-                QWidget {
-                    border: 2px dashed #aaa;
-                    border-radius: 5px;
-                    padding: 5px;
-                    margin: 2px;
-                }
-                QWidget[dragTarget="true"] {
-                    background-color: #e0f0e0;
-                    border-color: #4CAF50;
-                }
-                QWidget:hover {
-                    background-color: #f0f0f0;
-                }
-            """)
-            row_widget.setProperty("dragTarget", False)
+
             row_widget.setFocusPolicy(Qt.StrongFocus)
             row_widget.installEventFilter(self)
 
@@ -802,10 +763,8 @@ class MainWindow(QMainWindow):
 
     def _create_menu_bar(self):
         """Create the menu bar with theme switching options"""
-        menubar = self.menuBar()
-
         # Settings menu
-        settings_menu = menubar.addMenu("设置")
+        settings_menu = self.menubar.addMenu("设置")
 
         # Theme submenu
         theme_menu = settings_menu.addMenu("主题")
@@ -855,11 +814,18 @@ class MainWindow(QMainWindow):
     def _handle_table_drop(self, event: QDropEvent, category: str):
         """处理表格文件拖放事件"""
         try:
+            logger.debug(f"开始处理表格拖放事件，类别: {category}")
             urls = event.mimeData().urls()
-            if urls and self.drag_acceptable:
+            logger.debug(f"拖放的URLs: {[url.toString() for url in urls]}")
+            
+            if urls:
                 file_path = Path(self._normalize_path(urls[0].toLocalFile()))
+                logger.debug(f"处理拖放文件: {file_path}")
                 self._handle_table_upload(file_path, category)
                 event.accept()
+                logger.debug("表格拖放事件已接受")
+            else:
+                event.ignore()
         except Exception as e:
             logger.error(f"表格拖放错误: {str(e)}")
             QMessageBox.critical(self, "错误", f"处理拖放失败: {str(e)}")
@@ -991,7 +957,7 @@ class MainWindow(QMainWindow):
         """处理整行拖放事件"""
         try:
             urls = event.mimeData().urls()
-            if urls and self.drag_acceptable:
+            if urls:
                 file_path = Path(self._normalize_path(urls[0].toLocalFile()))
                 # 根据类别和文件类型分别处理
                 if category == "output_table" or category in REQUIRED_TABLE_CATEGORIES + OPTIONAL_TABLE_CATEGORIES:
@@ -1016,7 +982,7 @@ class MainWindow(QMainWindow):
 
     def _handle_file_drop(self, category: str, file_path: Path):
         """Handle image files dropped onto the widget"""
-        try:
+        try: 
             if file_path.suffix.lower() not in ALLOWED_IMAGE_EXTENSIONS:
                 QMessageBox.warning(self, "错误", "不支持的图片文件类型，请上传JPG、PNG或BMP文件")
                 return
@@ -1440,28 +1406,30 @@ class MainWindow(QMainWindow):
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         """Handle widget events for clipboard paste support"""
         # Check if the object is one of our upload widgets
-        category = None
+        category = "output_table"
         # Check required image rows
         for cat, (widget, _) in self.required_rows.items():
             if obj == widget:
                 category = cat
                 break
         # Check optional image rows
-        if not category:
+        if category == "output_table":
             for cat, (widget, _) in self.optional_rows.items():
                 if obj == widget:
                     category = cat
                     break
         # Check required table rows
-        if not category:
+        if category == "output_table":
             for cat, (widget, _) in self.required_table_rows.items():
                 if obj == widget:
                     category = cat
+
                     break
         # Check optional table rows
-        if not category:
+        if category == "output_table":
             for cat, (widget, _) in self.optional_table_rows.items():
                 if obj == widget:
+
                     category = cat
                     break
 
@@ -1471,17 +1439,23 @@ class MainWindow(QMainWindow):
                 obj.setProperty("hovered", True)
                 obj.style().unpolish(obj)
                 obj.style().polish(obj)
-                _, status_label = (self.required_rows.get(category) or
-                                   self.optional_rows.get(category) or
-                                   self.required_table_rows.get(category) or
-                                   self.optional_table_rows.get(category))
+                
+                # Get the appropriate status label
+                status_label = None
+                if category == "output_table":
+                    status_label = self.table_status_label
+                else:
+                    _, status_label = (self.required_rows.get(category) or
+                                    self.optional_rows.get(category) or
+                                    self.required_table_rows.get(category) or
+                                    self.optional_table_rows.get(category))
 
                 # 获取剪贴板数据
                 mime_data = self.clipboard.mimeData()
 
                 # 检查是否为表格类别
                 is_table_category = (category == "output_table" or
-                                     category in REQUIRED_TABLE_CATEGORIES + OPTIONAL_TABLE_CATEGORIES)
+                                    category in REQUIRED_TABLE_CATEGORIES + OPTIONAL_TABLE_CATEGORIES)
 
                 # 检查剪贴板内容类型
                 has_valid_table = (mime_data.hasUrls() and any(Path(url.toLocalFile()).suffix.lower() in ALLOWED_TABLE_EXTENSIONS
@@ -1513,10 +1487,17 @@ class MainWindow(QMainWindow):
                 obj.setProperty("hovered", False)
                 obj.style().unpolish(obj)
                 obj.style().polish(obj)
-                _, status_label = (self.required_rows.get(category) or
-                                   self.optional_rows.get(category) or
-                                   self.required_table_rows.get(category) or
-                                   self.optional_table_rows.get(category))
+                
+                # Get the appropriate status label
+                status_label = None
+                if category == "output_table":
+                    status_label = self.table_status_label
+                else:
+                    _, status_label = (self.required_rows.get(category) or
+                                    self.optional_rows.get(category) or
+                                    self.required_table_rows.get(category) or
+                                    self.optional_table_rows.get(category))
+
                 # Check if file is already uploaded for this category
                 if category in self.uploaded_files:
                     status_label.setText("已上传")
@@ -1911,19 +1892,18 @@ class MainWindow(QMainWindow):
             logger.error(f"导出表格错误: {str(e)}")
             QMessageBox.critical(self, "错误", f"导出表格失败: {str(e)}")
 
-    def _check_drag_data(self, mime_data, category: str) -> bool:
-        """检查拖放数据是否有效"""
-        if not mime_data.hasUrls():
-            return False
-
-        urls = mime_data.urls()
-        if not urls:
-            return False
-
-        file_path = Path(self._normalize_path(urls[0].toLocalFile()))
-
-        # 检查文件类型
-        if category == "output_table" or category in REQUIRED_TABLE_CATEGORIES + OPTIONAL_TABLE_CATEGORIES:
-            return file_path.suffix.lower() in ALLOWED_TABLE_EXTENSIONS
+    def _get_datetime_format(self) -> str:
+        """Get the appropriate datetime format based on system"""
+        if platform.system().lower() == 'windows':
+            return "yyyy年MM月dd日 HH:mm:ss"
         else:
-            return file_path.suffix.lower() in ALLOWED_IMAGE_EXTENSIONS
+            # macOS/Linux可能需要不同的格式
+            return "yyyy-MM-dd HH:mm:ss"
+
+    def _get_date_format(self) -> str:
+        """Get the appropriate date format based on system"""
+        if platform.system().lower() == 'windows':
+            return "yyyy年MM月dd日"
+        else:
+            # macOS/Linux可能需要不同的格式
+            return "yyyy-MM-dd"

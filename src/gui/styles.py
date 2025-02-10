@@ -463,18 +463,3 @@ QTextEdit {
     font-family: monospace;
 }
 """
-
-
-class ThemeManager:
-    def __init__(self):
-        self.settings = QSettings('YourCompany', 'InvoiceProcessor')
-
-    def get_current_theme(self):
-        return self.settings.value('theme', 'light')
-
-    def set_theme(self, theme):
-        self.settings.setValue('theme', theme)
-
-    def get_theme_style(self):
-        theme = self.get_current_theme()
-        return DARK_THEME if theme == 'dark' else LIGHT_THEME
