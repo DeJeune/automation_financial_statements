@@ -17,12 +17,11 @@ settings = get_settings()
 class InvoiceProcessor:
     """Utility class for processing invoices using Gemini API"""
 
-    def __init__(self, output_table_path: Path, shift_config: ShiftConfig):
+    def __init__(self, shift_config: ShiftConfig):
         """
         Initialize the Gemini model and Excel updater
 
         Args:
-            output_table_path: Path to the output Excel file
             shift_config: Configuration for shift-related parameters
         """
         # Configure Gemini
@@ -38,9 +37,6 @@ class InvoiceProcessor:
         self.rpm_limit = 10  # Gemini API limit of 10 requests per minute
         self.window_size = 60  # Rolling window size in seconds
         self.shift_config = shift_config
-
-        # Initialize Excel updater
-        self.excel_updater = ExcelUpdater(output_table_path)
 
     async def _wait_for_rate_limit(self):
         """Wait if needed to respect rate limits"""

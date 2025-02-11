@@ -9,7 +9,7 @@ from src.config.shift_config import ShiftConfig
 class TableProcessor:
     """Utility class for processing table files"""
 
-    def __init__(self, output_table_path: Path, shift_config: ShiftConfig):
+    def __init__(self, shift_config: ShiftConfig):
         """
         初始化表格处理器
 
@@ -18,7 +18,6 @@ class TableProcessor:
             shift_config: 班次相关配置
         """
         self.shift_config = shift_config
-        self.excel_updater = ExcelUpdater(output_table_path)
 
     async def process_table(self, table_path: Union[str, Path], category: str) -> Dict[str, Any]:
         """

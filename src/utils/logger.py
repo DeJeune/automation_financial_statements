@@ -42,7 +42,7 @@ def setup_logger():
         logger.add(
             log_file,
             rotation="500 MB",
-            retention="10 days",
+            retention="7 days",
             format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}",
             level=settings.LOG_LEVEL,
             catch=True  # Catch exceptions that occur during logging

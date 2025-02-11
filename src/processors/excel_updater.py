@@ -112,43 +112,6 @@ class ExcelUpdater:
                 raise ValueError(
                     "Date based updates must include column and value")
 
-    @staticmethod
-    def merge_updates(updates_list: List[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
-        """
-        Merge multiple lists of updates into a single list, combining updates for the same sheet.
-
-        Args:
-            updates_list: List of update lists from different processors
-
-        Returns:
-            A single merged list of updates
-        """
-        merged = {}
-
-        for updates in updates_list:
-            for update in updates:
-                sheet_name = update['sheet']
-
-                if sheet_name not in merged:
-                    merged[sheet_name] = update.copy()
-                    continue
-
-                # Handle different update types
-                if 'updates' in update:
-                    if 'updates' not in merged[sheet_name]:
-                        merged[sheet_name]['updates'] = []
-                    merged[sheet_name]['updates'].extend(update['updates'])
-                elif 'product_name' in update:
-                    if 'product_updates' not in merged[sheet_name]:
-                        merged[sheet_name]['product_updates'] = []
-                    merged[sheet_name]['product_updates'].append({
-                        'product_name': update['product_name'],
-                        'column': update['column'],
-                        'value': update['value']
-                    })
-
-        return list(merged.values())
-
     def apply_updates(self, updates: List[Dict[str, Any]]) -> None:
         """
         Apply updates to the workbook in a thread-safe manner.
@@ -165,6 +128,9 @@ class ExcelUpdater:
         """
         try:
             with ExcelUpdater._global_lock:
+                # Initialize handling_fees dictionary at the start
+                handling_fees = {}
+
                 for update in updates:
                     # Validate update format
                     self._validate_update(update)
@@ -198,9 +164,6 @@ class ExcelUpdater:
                                             break
 
                         elif 'updates' in update:
-                            # Dictionary to track accumulated handling fees
-                            handling_fees = {}
-
                             # Handle row/column based updates
                             for row_update in update['updates']:
                                 row_idx = row_update['row'] - 1
@@ -223,11 +186,9 @@ class ExcelUpdater:
                                     sheet.cell(
                                         row=row_idx + 1, column=col_idx + 1).value = handling_fees[cell_key]
                                 else:
-                                    # For all other cells, we clear the existing value and set the new value
+                                    # For all other cells, just set the new value
                                     cell = sheet.cell(
                                         row=row_idx + 1, column=col_idx + 1)
-                                    cell.value = None  # Clear existing value
-                                    # Set new value
                                     cell.value = row_update['value']
 
                     elif sheet_name == '油品优惠明细 2':
