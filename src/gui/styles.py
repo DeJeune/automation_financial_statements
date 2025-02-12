@@ -231,6 +231,13 @@ QTextEdit {
     padding: 5px;
     font-family: monospace;
 }
+
+/* Separator Line */
+QFrame[frameShape="4"] {  /* HLine is shape 4 */
+    background-color: #cccccc;
+    border: none;
+    max-height: 2px;
+}
 """
 
 # Dark Theme
@@ -461,5 +468,12 @@ QTextEdit {
     border-radius: 4px;
     padding: 5px;
     font-family: monospace;
+}
+
+/* Separator Line */
+QFrame[frameShape="4"] {  /* HLine is shape 4 */
+    background-color: #cccccc;
+    border: none;
+    max-height: 2px;
 }
 """

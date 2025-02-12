@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QFileDialog, QGroupBox, QLabel, QMessageBox,
                                QHeaderView, QApplication, QScrollArea, QSplitter,
                                QDateEdit, QDateTimeEdit, QDoubleSpinBox, QTabWidget,
-                               QTextEdit, QMenuBar, QMenu, QSizePolicy)
+                               QTextEdit, QMenuBar, QMenu, QSizePolicy, QFrame)
 from PySide6.QtCore import Qt, QSize, Signal, QObject, QThread, QEvent, QDate, QDateTime, QTimer, QThreadPool, QRunnable
 from PySide6.QtGui import QColor, QDropEvent, QImage, QKeyEvent, QActionGroup, QFont
 from pathlib import Path
@@ -462,8 +462,9 @@ class MainWindow(QMainWindow):
         # Required files section
         required_group = QGroupBox("必填图片（必须全部上传）")
         required_layout = QVBoxLayout()
+        required_layout.setSpacing(0)  # Set spacing to 0 to control spacing manually
 
-        for category in REQUIRED_IMAGE_CATEGORIES:
+        for i, category in enumerate(REQUIRED_IMAGE_CATEGORIES):
             row_widget = QWidget()
             row_widget.setAcceptDrops(True)
             row_widget.setSizePolicy(
@@ -506,6 +507,9 @@ class MainWindow(QMainWindow):
 
             required_layout.addWidget(row_widget)
             self.required_rows[category] = (row_widget, status_label)
+            # Add separator line if not the last item
+            if i < len(REQUIRED_IMAGE_CATEGORIES) - 1:
+                required_layout.addWidget(self._create_separator())
 
         required_group.setLayout(required_layout)
         upload_layout.addWidget(required_group)
@@ -513,7 +517,9 @@ class MainWindow(QMainWindow):
         # 必填表格部分
         required_table_group = QGroupBox("必填表格（必须全部上传）")
         required_table_layout = QVBoxLayout()
-        for category in REQUIRED_TABLE_CATEGORIES:
+        required_table_layout.setSpacing(0)  # Set spacing to 0 to control spacing manually
+
+        for i, category in enumerate(REQUIRED_TABLE_CATEGORIES):
             # 创建表格上传行（与图片不同的样式）
             # 创建整行widget作为拖放区域
             row_widget = QWidget()
@@ -568,12 +574,17 @@ class MainWindow(QMainWindow):
 
             required_table_layout.addWidget(row_widget)
             self.required_table_rows[category] = (row_widget, status_label)
+            # Add separator line if not the last item
+            if i < len(REQUIRED_TABLE_CATEGORIES) - 1:
+                required_table_layout.addWidget(self._create_separator())
+
         required_table_group.setLayout(required_table_layout)
         upload_layout.addWidget(required_table_group)
 
         # Optional files section
         optional_group = QGroupBox("可选文件")
         optional_layout = QVBoxLayout()
+        optional_layout.setSpacing(0)  # Set spacing to 0 to control spacing manually
 
         # 可选表格
         for category in OPTIONAL_TABLE_CATEGORIES:
@@ -618,8 +629,16 @@ class MainWindow(QMainWindow):
             optional_layout.addWidget(row_widget)
             self.optional_table_rows[category] = (row_widget, status_label)
 
+            # Add separator line after table categories except last one
+            if category != OPTIONAL_TABLE_CATEGORIES[-1]:
+                optional_layout.addWidget(self._create_separator())
+
+        # Add a separator line between table and image sections if both exist
+        if OPTIONAL_TABLE_CATEGORIES and OPTIONAL_IMAGE_CATEGORIES:
+            optional_layout.addWidget(self._create_separator())
+
         # 创建可选文件行
-        for category in OPTIONAL_IMAGE_CATEGORIES:
+        for i, category in enumerate(OPTIONAL_IMAGE_CATEGORIES):
             row_widget = QWidget()
             row_widget.setAcceptDrops(True)
             row_widget.setSizePolicy(
@@ -664,6 +683,10 @@ class MainWindow(QMainWindow):
 
             optional_layout.addWidget(row_widget)
             self.optional_rows[category] = (row_widget, status_label)
+
+            # Add separator line between image categories except last one
+            if i < len(OPTIONAL_IMAGE_CATEGORIES) - 1:
+                optional_layout.addWidget(self._create_separator())
 
         optional_group.setLayout(optional_layout)
         upload_layout.addWidget(optional_group)
@@ -1395,6 +1418,11 @@ class MainWindow(QMainWindow):
                                        self.required_table_rows.get(category) or
                                        self.optional_table_rows.get(category))
 
+                # 检查是否已上传文件
+                if category in self.uploaded_files:
+                    status_label.setText("已上传")
+                    return True
+
                 # 获取剪贴板数据
                 mime_data = self.clipboard.mimeData()
 
@@ -1766,3 +1794,12 @@ class MainWindow(QMainWindow):
         else:
             # macOS/Linux可能需要不同的格式
             return "yyyy-MM-dd"
+
+    def _create_separator(self) -> QFrame:
+        """Create a standard separator line"""
+        line = QFrame()
+        line.setFrameShape(QFrame.HLine)
+        line.setFrameShadow(QFrame.Plain)  # 改为Plain而不是Sunken
+        line.setStyleSheet("QFrame { background-color: #cccccc; border: none; }")
+        line.setFixedHeight(2)  # 使用setFixedHeight替代setMaximumHeight
+        return line
