@@ -34,14 +34,21 @@ jobs:
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
 
       - name: Set up Poetry
-        uses: abatilo/actions-poetry@v3 # 会自动安装pipx，然后再安装poetry
+        uses: abatilo/actions-poetry@v3
         with:
-          poetry-version: latest
+          poetry-version: '2.0.1'
+
+      - name: Configure Poetry
+        run: |
+          poetry config virtualenvs.create true
+          poetry config virtualenvs.in-project true
 
       - name: Install dependencies
-        run: poetry install --no-root
+        run: poetry install --no-root --no-interaction
       
       - name: Install NSIS
         run: |
