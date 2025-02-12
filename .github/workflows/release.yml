@@ -48,7 +48,9 @@ jobs:
           poetry config virtualenvs.in-project true
 
       - name: Install dependencies
-        run: poetry install --no-root --no-interaction
+        run: |
+          poetry lock
+          poetry install --no-root --no-interaction
       
       - name: Install NSIS
         run: |
