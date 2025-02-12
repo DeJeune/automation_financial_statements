@@ -1,6 +1,6 @@
 [project]
 name = "automation-financial-statements"
-version = "0.1.0"
+version = "0.1.1"
 description = ""
 authors = [
     {name = "jeuneastre",email = "sy20010504@gmail.com"}
