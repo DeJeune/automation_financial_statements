@@ -241,13 +241,9 @@ class MainWindow(QMainWindow):
 
         # 在初始化时设置默认字体和编码
         if platform.system().lower() == 'windows':
-            # Windows系统设置
-            self.setFont(QFont('Microsoft YaHei', 9))  # 使用微软雅黑字体
             self.is_windows = True
             self.is_mac = False
         else:
-            # macOS/Linux系统设置
-            self.setFont(QFont('PingFang SC', 9))  # 使用苹方字体
             self.is_mac = True
             self.is_windows = False
 
