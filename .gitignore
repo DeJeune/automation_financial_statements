@@ -1,4 +1,4 @@
-.venv
+.venv/
 .pytest_cache
 .DS_Store
 images
@@ -11,6 +11,9 @@ tables
 # Environment variables
 .env
 .env.*
+
+# Output files
+output/
 
 # Python
 __pycache__/
@@ -35,6 +38,8 @@ logs/
 dist/
 build/
 *.egg-info/
+# Nuitka build files
+*.dist/
 
 # Test coverage
 .coverage

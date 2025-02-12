@@ -1,8 +1,8 @@
-from typing import Dict, Any, List, Union
+import re
+from typing import Dict, Any, Union
 from pathlib import Path
 import pandas as pd
 from src.utils.logger import logger
-from src.processors.excel_updater import ExcelUpdater
 from src.config.shift_config import ShiftConfig
 
 
@@ -207,10 +207,15 @@ class TableProcessor:
             # Extract voucher amounts and calculate total value
             def extract_voucher_amount(product_name: str) -> float:
                 try:
-                    # Extract the number before "元" from strings like "【春节不打烊】186代200元汽油代金券"
-                    amount = float(
-                        ''.join(filter(str.isdigit, product_name.split('元')[0][-4:])))
-                    return amount
+                    # 使用正则表达式提取 "元" 之前的数字
+                    match = re.search(r'(\d+)元', product_name)
+                    if match:
+                        amount = float(match.group(1))
+                        return amount
+                    else:
+                        logger.warning(
+                            f"Could not extract voucher amount from: {product_name}")
+                        return 0.0
                 except Exception:
                     logger.warning(
                         f"Could not extract voucher amount from: {product_name}")

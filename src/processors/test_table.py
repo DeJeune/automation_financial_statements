@@ -1,4 +1,5 @@
 from datetime import date, datetime
+import re
 import pandas as pd
 import openpyxl
 from openpyxl.worksheet.worksheet import Worksheet
@@ -222,6 +223,15 @@ def process_douyin(path: Path) -> Dict[str, Any]:
         logger.error(f"Error processing Douyin table: {str(e)}")
         raise
 
+def extract_voucher_amount(product_name: str) -> float:
+    # Extract the number before "元" from strings like "【春节不打烊】186代200元汽油代金券（XXXX）"
+    print(product_name.split('元')[0][-4:])
+    match = re.search(r'(\d+)元', product_name)
+    if match:
+        amount = float(match.group(1))
+        return amount
+    else:
+        return 0.0
 
 def get_column_index(column: str) -> int:
     """
@@ -262,4 +272,4 @@ def normalize_product_name(name: str) -> str:
 
 
 if __name__ == "__main__":
-    process_table_data()
+    print(extract_voucher_amount("【春节不打烊】186代200元汽油代金券（XXXX）"))

@@ -1,0 +1,70 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - v*.*.*
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        os: [windows-latest]
+        python-version: ['3.11.4']
+      fail-fast: false
+    
+    steps:
+      - name: Check out Git repository  
+        uses: actions/checkout@v4
+      
+      - name: Get release tag
+        id: get-tag
+        shell: bash
+        run: |
+          echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+      
+      - name: Set up C compiler
+        if: matrix.os == 'windows-latest'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+
+      - name: Set up Poetry
+        uses: abatilo/actions-poetry@v3 # 会自动安装pipx，然后再安装poetry
+        with:
+          poetry-version: latest
+
+      - name: Install dependencies
+        run: poetry install --no-root
+      
+      - name: Install NSIS
+        run: |
+          iwr -useb get.scoop.sh -outfile 'install.ps1'
+          .\install.ps1 -RunAsAdmin
+          scoop update
+          scoop bucket add extras
+          scoop install nsis
+      
+      - name: Build Windows executable
+        run: |
+          poetry run nuitka --standalone `
+            --windows-console-mode=disable `
+            --enable-plugin=pyside6 `
+            --windows-icon-from-ico=assets/app.ico `
+            --output-filename=FinancialAutomation main.py
+      
+      - name: Build installer
+        run: makensis /DPRODUCT_VERSION=${{ steps.get-tag.outputs.tag }} installer.nsi
+      
+      - name: Upload release asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: Financial_Automation_Setup.exe
+          path: FinancialAutomation.exe
+
