@@ -3,9 +3,9 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QFileDialog, QGroupBox, QLabel, QMessageBox,
                                QHeaderView, QApplication, QScrollArea, QSplitter,
                                QDateEdit, QDateTimeEdit, QDoubleSpinBox, QTabWidget,
-                               QTextEdit, QMenuBar, QMenu, QSizePolicy, QFrame)
-from PySide6.QtCore import Qt, QSize, Signal, QObject, QThread, QEvent, QDate, QDateTime, QTimer, QThreadPool, QRunnable
-from PySide6.QtGui import QColor, QDropEvent, QImage, QKeyEvent, QActionGroup, QFont
+                               QTextEdit, QSizePolicy, QFrame)
+from PySide6.QtCore import Qt, QSize, Signal, QObject, QThread, QEvent, QDate, QDateTime, QTimer
+from PySide6.QtGui import QColor, QDropEvent, QImage, QKeyEvent, QActionGroup
 from pathlib import Path
 import asyncio
 import shutil
