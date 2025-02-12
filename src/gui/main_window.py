@@ -224,6 +224,18 @@ class LogViewer(QWidget):
         self.log_text.clear()
 
 
+class NoScrollDateEdit(QDateEdit):
+    """Custom QDateEdit that ignores mouse wheel events"""
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class NoScrollDateTimeEdit(QDateTimeEdit):
+    """Custom QDateTimeEdit that ignores mouse wheel events"""
+    def wheelEvent(self, event):
+        event.ignore()
+
+
 class MainWindow(QMainWindow):
     """Main window for the invoice processing application"""
 
@@ -390,14 +402,14 @@ class MainWindow(QMainWindow):
 
         # Date selector
         date_label = QLabel("表格日期:")
-        self.date_selector = QDateEdit()
-        self.date_selector.setCalendarPopup(True)  # Enable calendar popup
+        self.date_selector = NoScrollDateEdit()  # Use custom widget
+        self.date_selector.setCalendarPopup(True)
         self.date_selector.setDate(self.shift_config.date)
         self.date_selector.dateChanged.connect(self._on_date_changed)
 
         # Work start time selector
         work_start_label = QLabel("上班时间:")
-        self.work_start_selector = QDateTimeEdit()
+        self.work_start_selector = NoScrollDateTimeEdit()  # Use custom widget
         self.work_start_selector.setDisplayFormat(self._get_datetime_format())
         self.work_start_selector.setDateTime(self.shift_config.work_start_time)
         self.work_start_selector.dateTimeChanged.connect(
@@ -416,7 +428,7 @@ class MainWindow(QMainWindow):
 
         # Shift time selector
         shift_time_label = QLabel("交班时间:")
-        self.shift_time_selector = QDateTimeEdit()
+        self.shift_time_selector = NoScrollDateTimeEdit()  # Use custom widget
         self.shift_time_selector.setDisplayFormat(self._get_datetime_format())
         self.shift_time_selector.setDateTime(self.shift_config.shift_time)
         self.shift_time_selector.dateTimeChanged.connect(
