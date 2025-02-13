@@ -23,7 +23,6 @@ __pycache__/
 .Python
 venv/
 ENV/
-
 # Logs
 logs/
 *.log
@@ -46,3 +45,5 @@ build/
 # Test coverage
 .coverage
 htmlcov/
+
+/uv.lock
