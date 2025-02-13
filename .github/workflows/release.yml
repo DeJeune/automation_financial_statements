@@ -54,7 +54,7 @@ jobs:
       
       - name: Build Windows executable
         run: |
-          poetry run nuitka --standalone `
+          nuitka --standalone `
             --windows-console-mode=disable `
             --enable-plugin=pyside6 `
             --windows-icon-from-ico=assets/app.ico `
