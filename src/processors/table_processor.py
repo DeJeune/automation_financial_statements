@@ -47,6 +47,8 @@ class TableProcessor:
                 result = await self._process_douyin(table_path)
             elif category == "通联":
                 result = await self._process_tonglian(table_path)
+            elif category == "充值明细":
+                result = await self._process_recharge_details(table_path)
             else:
                 raise ValueError(f"Unsupported table category: {category}")
 
@@ -292,3 +294,42 @@ class TableProcessor:
             'updates': updates,
             'processed_data': p
         }
+
+    async def _process_recharge_details(self, path: Path) -> Dict[str, Any]:
+        """Process 充值明细表格"""
+        try:
+            df = pd.read_excel(path, skiprows=2, usecols=['充值金额', '充值赠送', '付款方式'])
+
+            # 将充值金额和充值赠送的 NaN 值填充为 0
+            df['充值金额'] = df['充值金额'].fillna(0)
+            df['充值赠送'] = df['充值赠送'].fillna(0)
+
+            # 创建在线支付和现金支付的掩码
+            online_mask = (df['付款方式'].str.contains('微信|支付宝', na=False))
+            cash_mask = (df['付款方式'].str.contains('现金', na=False))
+            
+            online_recharge = df[online_mask]['充值金额'].sum() + df[online_mask]['充值赠送'].sum()
+            cash_recharge = df[cash_mask]['充值金额'].sum() + df[cash_mask]['充值赠送'].sum()
+
+            p = {
+                'online_recharge': round(online_recharge / 3, 2),
+                'cash_recharge': round(cash_recharge / 3, 2)
+            }
+
+            updates = [{
+                'sheet': '调价前',
+                'updates': [
+                    {'row': 68, 'column': 'C', 'value': p['online_recharge']},
+                    {'row': 73, 'column': 'C', 'value': p['cash_recharge']}
+                ]
+            }]
+
+            return {
+                'updates': updates,
+                'processed_data': p
+            }
+
+        except Exception as e:
+            logger.error(f"处理充值明细表格错误: {str(e)}")
+            raise
+

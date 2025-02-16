@@ -79,6 +79,48 @@ def process_table_data() -> None:
         logger.error(f"处理过程中出现错误: {e}")
         raise
 
+def process_recharge_details() -> Dict[str, Any]:
+    """Process 充值明细表格"""
+    try:
+        path = "tables/1.xlsx"
+        df = pd.read_excel(path, skiprows=2, usecols=['充值金额', '充值赠送', '付款方式'])
+        
+        
+        # 将充值金额和充值赠送的 NaN 值填充为 0
+        df['充值金额'] = df['充值金额'].fillna(0)
+        df['充值赠送'] = df['充值赠送'].fillna(0)
+
+        # 创建在线支付和现金支付的掩码
+        online_mask = (df['付款方式'].str.contains('微信|支付宝', na=False))
+        cash_mask = (df['付款方式'].str.contains('现金', na=False))
+            
+        # 分别计算在线支付和现金支付的总额
+        online_recharge = (df[online_mask]['充值金额'].sum() + 
+                         df[online_mask]['充值赠送'].sum())
+        cash_recharge = (df[cash_mask]['充值金额'].sum() + 
+                        df[cash_mask]['充值赠送'].sum())
+
+        p = {
+            'online_recharge': round(online_recharge / 3, 2),
+            'cash_recharge': round(cash_recharge / 3, 2)
+        }
+
+        updates = [{
+                'sheet': '调价前',
+                'updates': [
+                    {'row': 68, 'column': 'C', 'value': p['online_recharge']},
+                    {'row': 73, 'column': 'C', 'value': p['cash_recharge']}
+                ]
+        }]
+
+        return {
+            'updates': updates,
+            'processed_data': p
+        }
+
+    except Exception as e:
+        logger.error(f"处理充值明细表格错误: {str(e)}")
+        raise
 
 def process_time_statistics(path: Path) -> Dict[str, Any]:
     """Process 油品时间统计 table"""
@@ -272,4 +314,4 @@ def normalize_product_name(name: str) -> str:
 
 
 if __name__ == "__main__":
-    print(extract_voucher_amount("【春节不打烊】186代200元汽油代金券（XXXX）"))
+    print(process_recharge_details().get('processed_data'))

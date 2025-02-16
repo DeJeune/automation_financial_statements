@@ -99,6 +99,10 @@ class InvoiceProcessor:
                 result = await self._process_guotong(processed_data, category)
             elif category == "团油":
                 result = await self._process_tuanyou(processed_data)
+            elif category == "POS":
+                result = await self._process_pos(processed_data)
+            elif category == "超市销售收入":
+                result = await self._process_supermarket(processed_data)
 
             return result
 
@@ -272,6 +276,42 @@ class InvoiceProcessor:
             'updates': [
                 {'column': 'T', 'value': p['gas_stats']},
                 {'column': 'U', 'value': p['gas_discount']}
+            ]
+        }]
+        return {
+            'updates': updates,
+            'processed_data': p
+        }
+
+    async def _process_pos(self, processed_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Process POS invoice"""
+        # 实现具体的处理逻辑
+        settlement_amount = parse_numeric_value(processed_data["结算总金额"])
+        p = {
+            'settlement_amount': round(settlement_amount / 3, 2)
+        }
+        updates = [{
+            'sheet': '调价前',
+            'updates': [
+                {'row': 80, 'column': 'E', 'value': p['settlement_amount']}
+            ]
+        }]
+        return {
+            'updates': updates,
+            'processed_data': p
+        }
+
+    async def _process_supermarket(self, processed_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Process supermarket invoice"""
+        # 实现具体的处理逻辑
+        settlement_amount = parse_numeric_value(processed_data["合计"][-1])
+        p = {
+            'settlement_amount': round(settlement_amount / 3, 2)
+        }
+        updates = [{
+            'sheet': '调价前',
+            'updates': [
+                {'row': 71, 'column': 'H', 'value': p['settlement_amount']}
             ]
         }]
         return {
