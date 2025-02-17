@@ -1,19 +1,20 @@
+import os
 import pytest
-from fastapi.testclient import TestClient
-from src.api.main import app
 
-@pytest.fixture
-def client():
-    """Test client fixture"""
-    return TestClient(app)
 
-@pytest.fixture
-def test_settings():
-    """Test settings fixture"""
-    from src.config.settings import Settings
-    
-    return Settings(
-        API_V1_STR="/api/v1",
-        PROJECT_NAME="Financial Statements Automation Test",
-        LOG_LEVEL="DEBUG"
-    ) 
+@pytest.fixture(autouse=True)
+def setup_test_environment():
+    """设置测试环境"""
+    # 保存原始环境变量
+    original_env = os.environ.get('APP_ENV')
+
+    # 设置测试环境
+    os.environ['APP_ENV'] = 'development'
+
+    yield
+
+    # 恢复原始环境变量
+    if original_env is not None:
+        os.environ['APP_ENV'] = original_env
+    else:
+        del os.environ['APP_ENV']

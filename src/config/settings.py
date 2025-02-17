@@ -9,15 +9,8 @@ import sys
 
 class Settings(BaseSettings):
     """Application settings"""
-    # API Configuration
-    API_V1_STR: str = "/api/v1"
-    PROJECT_NAME: str = "Financial Statements Automation"
-
-    # Base directory
-    BASE_DIR: Path = Path(__file__).resolve().parent.parent.parent
-
-    # Model Configuration
-    MODEL_PATH: str = str(BASE_DIR / "models" / "configs")
+    # Environment Configuration
+    ENV: str = os.getenv("APP_ENV", "development")  # 默认为开发环境
 
     # Gemini Configuration
     GEMINI_API_KEY: str = ""
@@ -33,38 +26,75 @@ class Settings(BaseSettings):
     GITHUB_OWNER: str = "DeJeune"
     GITHUB_REPO: str = "automation_financial_statements"
 
+    # Base directory
+    BASE_DIR: Path = Path(__file__).resolve().parent.parent.parent
+
+    # 应用数据目录 - 开发环境使用项目目录，生产环境使用系统目录
+    APP_DATA_DIR: Path = (
+        BASE_DIR if ENV == "development"
+        else Path(os.getenv('LOCALAPPDATA', str(Path.home() / '.local' / 'share'))) / "Financial Automation"
+    )
+    APP_CONFIG_DIR: Path = APP_DATA_DIR / "config"
+    APP_LOGS_DIR: Path = APP_DATA_DIR / "logs"
+    APP_ASSETS_DIR: Path = APP_DATA_DIR / "assets"
+
     @classmethod
     def load_settings(cls) -> "Settings":
         """
         按优先级加载配置:
-        1. 系统环境变量
-        2. 用户目录下的 .env 文件 (适用于打包后)
-        3. 应用目录下的默认 .env 文件
+        1. 系统环境变量 (仅在生产环境)
+        2. 用户数据目录下的配置文件
+        3. 应用安装目录下的默认配置
         """
-        # 获取可执行文件所在目录
+        # 获取环境
+        env = os.getenv("APP_ENV", "development")
+
+        # 获取基础目录
         if getattr(sys, 'frozen', False):
-            # 如果是打包后的应用
+            # 打包后的应用
             app_dir = Path(sys.executable).parent
+            if env == "production":
+                app_data_dir = Path(os.getenv('LOCALAPPDATA')
+                                    ) / "Financial Automation"
+            else:
+                app_data_dir = app_dir
+            config_dir = app_data_dir / "config"
         else:
-            # 如果是开发环境
+            # 开发环境
             app_dir = Path(__file__).parent.parent.parent
+            app_data_dir = app_dir
+            config_dir = app_data_dir / "config"
 
-        # 可能的配置文件位置
-        possible_env_files = [
-            Path.cwd() / '.env',  # 当前工作目录
-            app_dir / '.env',     # 应用安装目录
-            app_dir / 'config' / '.env',  # 应用配置目录
-        ]
+        # 确保必要的目录存在
+        for directory in [app_data_dir, config_dir, app_data_dir / "logs", app_data_dir / "assets"]:
+            directory.mkdir(parents=True, exist_ok=True)
 
-        # 查找第一个存在的配置文件
-        env_file = next((f for f in possible_env_files if f.exists()), None)
-
-        if env_file:
-            logger.info(f"Loading configuration from {env_file}")
-            return cls(_env_file=env_file)
+        if env == "production":
+            # 生产环境：加载环境变量
+            logger.info("Loading production environment settings")
+            settings = cls()
         else:
-            logger.warning("No .env file found, using default settings")
-            return cls()
+            # 开发环境：从配置文件加载
+            # 可能的配置文件位置
+            possible_env_files = [
+                config_dir / '.env',  # 用户配置目录
+                app_dir / '.env',     # 应用安装目录
+                app_dir / 'config' / '.env',  # 应用配置目录
+            ]
+
+            # 查找第一个存在的配置文件
+            env_file = next(
+                (f for f in possible_env_files if f.exists()), None)
+
+            if env_file:
+                logger.info(
+                    f"Loading development configuration from {env_file}")
+                settings = cls(_env_file=env_file)
+            else:
+                logger.warning("No .env file found, using default settings")
+                settings = cls()
+
+        return settings
 
     class Config:
         env_file = ".env"

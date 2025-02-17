@@ -186,6 +186,7 @@ class LogViewer(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.settings = get_settings()
         self.init_ui()
         self.log_update_timer = QTimer(self)
         self.log_update_timer.timeout.connect(self.update_log)
@@ -218,7 +219,14 @@ class LogViewer(QWidget):
     def update_log(self):
         """Update log content from the log file"""
         try:
-            log_file = Path("logs/app.log")
+            # 根据环境选择日志文件路径
+            if getattr(sys, 'frozen', False):
+                # 生产环境
+                log_file = self.settings.APP_LOGS_DIR / "app.log"
+            else:
+                # 开发环境
+                log_file = Path("logs/app.log")
+
             if not log_file.exists():
                 return
 
@@ -268,7 +276,7 @@ class MainWindow(QMainWindow):
         # Connect the signal
         self.processing_completed.connect(self._on_all_processing_complete)
 
-        # 在初始化时设置默认字体和编码
+        # 设置操作系统类型
         if platform.system().lower() == 'windows':
             self.is_windows = True
             self.is_mac = False
@@ -276,11 +284,24 @@ class MainWindow(QMainWindow):
             self.is_mac = True
             self.is_windows = False
 
-        self.image_dir = Path("images")
+        # 获取配置
+        self.settings = get_settings()
+
+        # 根据环境设置目录
+        if getattr(sys, 'frozen', False):
+            # 生产环境 - 使用 LOCALAPPDATA 目录
+            self.image_dir = self.settings.APP_DATA_DIR / "images"
+            self.table_dir = self.settings.APP_DATA_DIR / "tables"
+            self.output_dir = self.settings.APP_DATA_DIR / "output/table"
+        else:
+            # 开发环境 - 使用项目目录
+            self.image_dir = Path("images")
+            self.table_dir = Path("tables")
+            self.output_dir = Path("output/table")
+
+        # 确保目录存在
         self.image_dir.mkdir(parents=True, exist_ok=True)
-        self.table_dir = Path("tables")
         self.table_dir.mkdir(parents=True, exist_ok=True)
-        self.output_dir = Path("output/table")
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
         # Initialize theme manager
