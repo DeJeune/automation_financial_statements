@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     # Logging Configuration
     LOG_LEVEL: str = "DEBUG"
 
+    # GitHub Configuration
+    GITHUB_TOKEN: str = ""  # GitHub API token for checking updates
+    GITHUB_OWNER: str = "DeJeune"
+    GITHUB_REPO: str = "automation_financial_statements"
+
     @classmethod
     def load_settings(cls) -> "Settings":
         """

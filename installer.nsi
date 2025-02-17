@@ -58,6 +58,12 @@ Section "MainSection" SEC01
     WriteRegStr ${PRODUCT_UNINST_ROOT_KEY} "${PRODUCT_UNINST_KEY}" "DisplayVersion" "${PRODUCT_VERSION}"
     WriteRegStr ${PRODUCT_UNINST_ROOT_KEY} "${PRODUCT_UNINST_KEY}" "URLInfoAbout" "${PRODUCT_WEB_SITE}"
     WriteRegStr ${PRODUCT_UNINST_ROOT_KEY} "${PRODUCT_UNINST_KEY}" "Publisher" "${PRODUCT_PUBLISHER}"
+    
+    # 创建版本配置文件
+    SetOutPath "$INSTDIR\config"
+    FileOpen $0 "$INSTDIR\config\version.json" w
+    FileWrite $0 '{"version": "${PRODUCT_VERSION}"}'
+    FileClose $0
 SectionEnd
 
 Section Uninstall

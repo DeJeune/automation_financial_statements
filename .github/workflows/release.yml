@@ -68,6 +68,7 @@ jobs:
         with:
           name: Financial_Automation_Setup_${{ steps.get-tag.outputs.tag }}.exe
           path: Financial_Automation_Setup_${{ steps.get-tag.outputs.tag }}.exe
+
       - name: Upload release
         uses: softprops/action-gh-release@v2
         with:

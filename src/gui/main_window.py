@@ -3,9 +3,9 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QFileDialog, QGroupBox, QLabel, QMessageBox,
                                QHeaderView, QApplication, QScrollArea, QSplitter,
                                QDateEdit, QDateTimeEdit, QDoubleSpinBox, QTabWidget,
-                               QTextEdit, QSizePolicy, QFrame)
+                               QTextEdit, QSizePolicy, QFrame, QProgressDialog)
 from PySide6.QtCore import Qt, QSize, Signal, QObject, QThread, QEvent, QDate, QDateTime, QTimer
-from PySide6.QtGui import QColor, QDropEvent, QImage, QKeyEvent, QActionGroup
+from PySide6.QtGui import QColor, QDropEvent, QImage, QKeyEvent, QActionGroup, QDesktopServices
 from pathlib import Path
 import asyncio
 import shutil
@@ -21,6 +21,18 @@ from src.gui.components.preview import TablePreviewDialog, ImagePreviewDialog
 from src.utils.theme_manager import ThemeManager
 import pandas as pd
 import platform
+import requests
+from packaging import version
+from PySide6.QtCore import QUrl
+import re
+from urllib.parse import urljoin
+import os
+import sys
+import subprocess
+from tempfile import gettempdir
+from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
+from src.config.version_config import VersionConfig
+from src.config.settings import get_settings
 
 REQUIRED_IMAGE_CATEGORIES = [
     "国通1", "国通2"
@@ -32,6 +44,9 @@ OPTIONAL_TABLE_CATEGORIES = ["通联", "抖音"]  # 可选表格
 OPTIONAL_IMAGE_CATEGORIES = ["团油", "货车帮", "滴滴加油", "POS", "超市销售收入"]  # 可选图片
 ALLOWED_IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.tiff', '.bmp'}
 ALLOWED_TABLE_EXTENSIONS = {'.xlsx', '.xls', '.csv'}
+
+# 获取应用配置
+settings = get_settings()
 
 
 class WorkerSignals(QObject):
@@ -226,12 +241,14 @@ class LogViewer(QWidget):
 
 class NoScrollDateEdit(QDateEdit):
     """Custom QDateEdit that ignores mouse wheel events"""
+
     def wheelEvent(self, event):
         event.ignore()
 
 
 class NoScrollDateTimeEdit(QDateTimeEdit):
     """Custom QDateTimeEdit that ignores mouse wheel events"""
+
     def wheelEvent(self, event):
         event.ignore()
 
@@ -302,6 +319,19 @@ class MainWindow(QMainWindow):
         # Enable clipboard monitoring
         self.clipboard = QApplication.clipboard()
         self.current_hover_category = None
+
+        # 添加检查更新菜单
+        self._add_update_menu()
+
+        # 设置 GitHub 仓库信息
+        self.github_owner = "DeJeune"
+        self.github_repo = "automation_financial_statements"
+        self.version_config = VersionConfig()
+
+        # 添加网络管理器
+        self.network_manager = QNetworkAccessManager()
+        self.download_reply = None
+        self.temp_installer = None
 
     def init_ui(self):
         """Initialize the user interface"""
@@ -462,7 +492,8 @@ class MainWindow(QMainWindow):
         # Required files section
         required_group = QGroupBox("必填图片（必须全部上传）")
         required_layout = QVBoxLayout()
-        required_layout.setSpacing(0)  # Set spacing to 0 to control spacing manually
+        # Set spacing to 0 to control spacing manually
+        required_layout.setSpacing(0)
 
         for i, category in enumerate(REQUIRED_IMAGE_CATEGORIES):
             row_widget = QWidget()
@@ -517,7 +548,8 @@ class MainWindow(QMainWindow):
         # 必填表格部分
         required_table_group = QGroupBox("必填表格（必须全部上传）")
         required_table_layout = QVBoxLayout()
-        required_table_layout.setSpacing(0)  # Set spacing to 0 to control spacing manually
+        # Set spacing to 0 to control spacing manually
+        required_table_layout.setSpacing(0)
 
         for i, category in enumerate(REQUIRED_TABLE_CATEGORIES):
             # 创建表格上传行（与图片不同的样式）
@@ -584,7 +616,8 @@ class MainWindow(QMainWindow):
         # Optional files section
         optional_group = QGroupBox("可选文件")
         optional_layout = QVBoxLayout()
-        optional_layout.setSpacing(0)  # Set spacing to 0 to control spacing manually
+        # Set spacing to 0 to control spacing manually
+        optional_layout.setSpacing(0)
 
         # 可选表格
         for category in OPTIONAL_TABLE_CATEGORIES:
@@ -1800,6 +1833,191 @@ class MainWindow(QMainWindow):
         line = QFrame()
         line.setFrameShape(QFrame.HLine)
         line.setFrameShadow(QFrame.Plain)  # 改为Plain而不是Sunken
-        line.setStyleSheet("QFrame { background-color: #cccccc; border: none; }")
+        line.setStyleSheet(
+            "QFrame { background-color: #cccccc; border: none; }")
         line.setFixedHeight(2)  # 使用setFixedHeight替代setMaximumHeight
         return line
+
+    def _add_update_menu(self):
+        """添加检查更新菜单项"""
+        help_menu = self.menubar.addMenu("帮助")
+        check_update_action = help_menu.addAction("检查更新")
+        check_update_action.triggered.connect(self.check_for_updates)
+
+    def check_for_updates(self):
+        """检查软件更新"""
+        try:
+            # 获取最新 release 信息
+            api_url = f"https://api.github.com/repos/{settings.GITHUB_OWNER}/{settings.GITHUB_REPO}/releases/latest"
+
+            # 准备请求头
+            headers = {
+                'Accept': 'application/vnd.github.v3+json'
+            }
+
+            # 如果有token则添加认证
+            if settings.GITHUB_TOKEN:
+                headers['Authorization'] = f'token {settings.GITHUB_TOKEN}'
+
+            # 发送请求
+            response = requests.get(api_url, headers=headers)
+            response.raise_for_status()
+            release_info = response.json()
+
+            latest_version = release_info["tag_name"]
+            current_version = self.version_config.get_version()
+
+            # 比较版本
+            if version.parse(latest_version) > version.parse(current_version):
+                # 找到 Windows 安装包
+                installer_asset = None
+                for asset in release_info["assets"]:
+                    if re.search(r'Financial_Automation_Setup.*\.exe$', asset["name"]):
+                        installer_asset = asset
+                        break
+
+                if not installer_asset:
+                    raise Exception("未找到安装包")
+
+                reply = QMessageBox.question(
+                    self,
+                    "发现新版本",
+                    f"发现新版本 {latest_version}\n\n" +
+                    f"更新说明:\n{release_info['body']}\n\n" +
+                    "是否更新?",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+
+                if reply == QMessageBox.Yes:
+                    # 不再直接打开链接，而是开始下载
+                    self._start_download(
+                        installer_asset["browser_download_url"],
+                        latest_version
+                    )
+            else:
+                QMessageBox.information(self, "检查更新", "当前已是最新版本")
+
+        except Exception as e:
+            logger.error(f"检查更新失败: {str(e)}")
+            QMessageBox.warning(self, "检查更新", "检查更新失败,请稍后重试")
+
+    def _start_download(self, url: str, latest_version: str):
+        """开始下载新版本"""
+        try:
+            # 保存最新版本号
+            self.latest_version = latest_version
+
+            # 创建临时文件路径
+            temp_dir = Path(gettempdir())
+            self.temp_installer = temp_dir / "FinancialAutomation_Update.exe"
+
+            # 创建进度对话框
+            self.progress_dialog = QProgressDialog(self)
+            self.progress_dialog.setWindowTitle("下载更新")
+            self.progress_dialog.setLabelText("正在下载新版本...")
+            self.progress_dialog.setCancelButtonText("取消")
+            self.progress_dialog.setRange(0, 100)
+            self.progress_dialog.canceled.connect(self._cancel_download)
+
+            # 开始下载
+            request = QNetworkRequest(QUrl(url))
+            self.download_reply = self.network_manager.get(request)
+            self.download_reply.downloadProgress.connect(self._update_progress)
+            self.download_reply.finished.connect(self._download_finished)
+            self.download_reply.error.connect(self._download_error)
+
+            self.progress_dialog.show()
+
+        except Exception as e:
+            logger.error(f"开始下载失败: {str(e)}")
+            QMessageBox.warning(self, "更新失败", "开始下载更新失败，请稍后重试")
+
+    def _update_progress(self, bytes_received: int, bytes_total: int):
+        """更新下载进度"""
+        if bytes_total > 0:
+            progress = int(bytes_received * 100 / bytes_total)
+            self.progress_dialog.setValue(progress)
+
+    def _cancel_download(self):
+        """取消下载"""
+        if self.download_reply and self.download_reply.isRunning():
+            self.download_reply.abort()
+
+    def _download_error(self, error_code: QNetworkReply.NetworkError):
+        """处理下载错误"""
+        error_msg = self.download_reply.errorString()
+        logger.error(f"下载更新失败: {error_msg}")
+        QMessageBox.warning(self, "更新失败", f"下载更新失败: {error_msg}")
+        self._cleanup_download()
+
+    def _download_finished(self):
+        """下载完成后处理"""
+        try:
+            if self.download_reply.error() == QNetworkReply.NoError:
+                # 保存下载的文件
+                with open(self.temp_installer, 'wb') as f:
+                    f.write(self.download_reply.readAll().data())
+
+                # 询问是否立即安装
+                reply = QMessageBox.question(
+                    self,
+                    "下载完成",
+                    "新版本已下载完成，是否立即安装？\n"
+                    "安装过程中程序将自动关闭。",
+                    QMessageBox.Yes | QMessageBox.No
+                )
+
+                if reply == QMessageBox.Yes:
+                    self._install_update()
+
+            self._cleanup_download()
+
+        except Exception as e:
+            logger.error(f"保存更新文件失败: {str(e)}")
+            QMessageBox.warning(self, "更新失败", "保存更新文件失败，请稍后重试")
+            self._cleanup_download()
+
+    def _cleanup_download(self):
+        """清理下载相关资源"""
+        if self.download_reply:
+            self.download_reply.deleteLater()
+            self.download_reply = None
+        if hasattr(self, 'progress_dialog'):
+            self.progress_dialog.close()
+
+    def _install_update(self):
+        """安装更新"""
+        try:
+            if self.temp_installer and self.temp_installer.exists():
+                # 创建启动更新的批处理文件
+                batch_file = Path(gettempdir()) / "update.bat"
+                current_exe = sys.executable
+
+                # 批处理文件内容
+                batch_content = f"""
+                @echo off
+                timeout /t 1 /nobreak > nul
+                start /wait "" "{self.temp_installer}"
+                del "{self.temp_installer}"
+                del "%~f0"
+                start "" "{current_exe}"
+                """.strip()
+
+                with open(batch_file, 'w') as f:
+                    f.write(batch_content)
+
+                # 更新版本号
+                self.version_config.set_version(self.latest_version)
+
+                # 启动批处理文件并退出应用
+                subprocess.Popen([batch_file], shell=True)
+                QApplication.quit()
+
+        except Exception as e:
+            logger.error(f"启动安装失败: {str(e)}")
+            QMessageBox.warning(
+                self,
+                "安装失败",
+                "启动安装程序失败，请手动运行下载的安装程序：\n" +
+                str(self.temp_installer)
+            )
