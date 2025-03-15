@@ -319,8 +319,8 @@ class TableProcessor:
             updates = [{
                 'sheet': '调价前',
                 'updates': [
-                    {'row': 68, 'column': 'C', 'value': p['online_recharge']},
-                    {'row': 73, 'column': 'C', 'value': p['cash_recharge']}
+                    {'row': 73, 'column': 'C', 'value': p['online_recharge']},
+                    {'row': 68, 'column': 'C', 'value': p['cash_recharge']}
                 ]
             }]
 
