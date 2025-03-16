@@ -304,7 +304,7 @@ class InvoiceProcessor:
     async def _process_supermarket(self, processed_data: Dict[str, Any]) -> Dict[str, Any]:
         """Process supermarket invoice"""
         # 实现具体的处理逻辑
-        settlement_amount = parse_numeric_value(processed_data["合计"][-1])
+        settlement_amount = parse_numeric_value(processed_data["现金"])
         p = {
             'settlement_amount': round(settlement_amount / 3, 2)
         }
