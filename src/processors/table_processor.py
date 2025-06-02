@@ -138,9 +138,9 @@ class TableProcessor:
                 'sheet': '油品优惠明细 2',
                 'date': self.shift_config.date.day,
                 'updates': [
-                    {'column': 'D',
-                        'value': processed_data['diesel_discount']},
                     {'column': 'G',
+                        'value': processed_data['diesel_discount']},
+                    {'column': 'J',
                         'value': processed_data['gasoline_discount']}
                 ]
             }]
@@ -257,8 +257,8 @@ class TableProcessor:
                 'sheet': '油品优惠明细 2',
                 'date': self.shift_config.date.day,
                 'updates': [
-                    {'column': 'AV', 'value': p['gas_quantity']},
-                    {'column': 'AW',
+                    {'column': 'AY', 'value': p['gas_quantity']},
+                    {'column': 'AZ',
                         'value': p['total_discount']},
                 ]
             }

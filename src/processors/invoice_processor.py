@@ -157,8 +157,8 @@ class InvoiceProcessor:
             'sheet': '油品优惠明细 2',
             'date': self.shift_config.date.day,
             'updates': [
-                {'column': 'X', 'value': p['diesel_stats']},
-                {'column': 'Y', 'value': p['diesel_discount']}
+                {'column': 'AA', 'value': p['diesel_stats']},
+                {'column': 'AB', 'value': p['diesel_discount']}
             ]
         }]
 
@@ -195,8 +195,8 @@ class InvoiceProcessor:
             'sheet': '油品优惠明细 2',
             'date': self.shift_config.date.day,
             'updates': [
-                {'column': 'M', 'value': p['gas_stats']},
-                {'column': 'N', 'value': p['gas_discount']}
+                {'column': 'P', 'value': p['gas_stats']},
+                {'column': 'Q', 'value': p['gas_discount']}
             ]
         }
         ]
@@ -274,8 +274,8 @@ class InvoiceProcessor:
             'sheet': '油品优惠明细 2',
             'date': self.shift_config.date.day,
             'updates': [
-                {'column': 'T', 'value': p['gas_stats']},
-                {'column': 'U', 'value': p['gas_discount']}
+                {'column': 'W', 'value': p['gas_stats']},
+                {'column': 'X', 'value': p['gas_discount']}
             ]
         }]
         return {
