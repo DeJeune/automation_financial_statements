@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     # Gemini Configuration
     GEMINI_API_KEY: str = ""
     GEMINI_MODEL: str = "gemini-2.0-flash"
+    GEMINI_BASE_URL: str = "https://generativelanguage.googleapis.com"
     GEMINI_TEMPERATURE: float = 0.7
     GEMINI_MAX_TOKENS: int = 5000
 

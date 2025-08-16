@@ -2,7 +2,8 @@ from typing import Dict, Any, Union, List
 import json
 import asyncio
 from pathlib import Path
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from PIL import Image
 from src.config.settings import get_settings
 from src.prompts.invoice_recognition import get_invoice_recognition_messages, INVOICE_SYSTEM_PROMPT
@@ -25,11 +26,8 @@ class InvoiceProcessor:
             shift_config: Configuration for shift-related parameters
         """
         # Configure Gemini
-        genai.configure(api_key=settings.GEMINI_API_KEY)
-        self.model = genai.GenerativeModel(
-            model_name=settings.GEMINI_MODEL,
-            system_instruction=INVOICE_SYSTEM_PROMPT
-        )
+        self.client = genai.Client(api_key=settings.GEMINI_API_KEY, http_options={'base_url': settings.GEMINI_BASE_URL})
+        self.model = settings.GEMINI_MODEL
         self._last_request_time = 0
         # 6 seconds between requests (10 RPM = 1 request per 6 seconds)
         self.min_request_interval = 6
@@ -367,10 +365,15 @@ class InvoiceProcessor:
                 while retry_count < max_retries:
                     try:
                         # Call Gemini API with image
-                        response = self.model.generate_content(
+                        response = self.client.models.generate_content(
+                            model=self.model,
+                            config=types.GenerateContentConfig(
+                                system_instruction=INVOICE_SYSTEM_PROMPT,
+                                max_output_tokens=settings.GEMINI_MAX_TOKENS,
+                                temperature=settings.GEMINI_TEMPERATURE
+                            ),
                             contents=[messages[1]["content"], image]
                         )
-                        response.resolve()
                         break  # If successful, break the retry loop
                     except Exception as api_error:
                         retry_count += 1
