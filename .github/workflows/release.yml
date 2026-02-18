@@ -45,7 +45,9 @@ jobs:
         run: uv sync --all-extras --dev
       
       - name: Install NSIS
-        run: choco install nsis -y
+        run: |
+          choco install nsis -y
+          echo "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
       
       - name: Build Windows executable
         run: |
