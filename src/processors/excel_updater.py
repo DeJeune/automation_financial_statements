@@ -92,7 +92,7 @@ class ExcelUpdater:
             raise ValueError(
                 f"Sheet '{update['sheet']}' not found in workbook")
 
-        if update['sheet'] == '调价前':
+        if update['sheet'] in ('调价前', '调价后'):
             if 'product_name' in update:
                 if not all(key in update for key in ['column', 'value']):
                     raise ValueError(
@@ -138,7 +138,7 @@ class ExcelUpdater:
                     sheet_name = update['sheet']
                     sheet = self.workbook[sheet_name]
 
-                    if sheet_name == '调价前':
+                    if sheet_name in ('调价前', '调价后'):
                         if 'section' in update:
                             target_section = update['section']
                             if target_section in ['A', 'B', 'C']:
