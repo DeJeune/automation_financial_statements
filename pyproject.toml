@@ -3,7 +3,7 @@ package = false
 
 [project]
 name = "automation-financial-statements"
-version = "0.1.6"
+version = "0.1.7"
 description = "Financial Statements Automation"
 authors = [
     {name = "jeuneastre", email = "sy20010504@gmail.com"}
