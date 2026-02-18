@@ -28,8 +28,8 @@ REQUIRED_IMAGE_CATEGORIES = [
 REQUIRED_TABLE_CATEGORIES = [  # 必填表格
     "油品时间统计", "油品优惠", "加油明细", "充值明细"
 ]
-OPTIONAL_TABLE_CATEGORIES = ["油品时间统计", "通联", "抖音"]  # 可选表格
-OPTIONAL_IMAGE_CATEGORIES = ["团油", "货车帮", "滴滴加油", "POS", "超市销售收入"]  # 可选图片
+OPTIONAL_TABLE_CATEGORIES = ["油品时间统计(调价后)", "通联"]  # 可选表格
+OPTIONAL_IMAGE_CATEGORIES = ["团油", "货车帮", "滴滴加油", "POS", "超市销售收入", "抖音"]  # 可选图片
 ALLOWED_IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.tiff', '.bmp'}
 ALLOWED_TABLE_EXTENSIONS = {'.xlsx', '.xls', '.csv'}
 

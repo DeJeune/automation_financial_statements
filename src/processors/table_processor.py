@@ -37,7 +37,9 @@ class TableProcessor:
 
             # Process based on category
             if category == "油品时间统计":
-                result = await self._process_time_statistics(table_path)
+                result = await self._process_time_statistics(table_path, sheet="调价前")
+            elif category == "油品时间统计(调价后)":
+                result = await self._process_time_statistics(table_path, sheet="调价后")
             elif category == "油品优惠":
                 result = await self._process_discounts(table_path)
             elif category == "加油明细":
@@ -57,7 +59,7 @@ class TableProcessor:
             logger.error(f"Error processing table file: {str(e)}")
             raise
 
-    async def _process_time_statistics(self, path: Path) -> Dict[str, Any]:
+    async def _process_time_statistics(self, path: Path, sheet: str = "调价前") -> Dict[str, Any]:
         """Process 油品时间统计 table"""
         try:
             # 按第三列（C列）分组并处理数据
@@ -86,7 +88,7 @@ class TableProcessor:
                     section = fuel_type_mapping.get(row['油品'])
                     if section:
                         updates.append({
-                            'sheet': '调价前',
+                            'sheet': sheet,
                             'section': section,
                             'product_name': row['机号'],
                             'column': 'D',  # D列
