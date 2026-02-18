@@ -365,6 +365,8 @@ class InvoiceProcessor:
                     system_instruction=INVOICE_SYSTEM_PROMPT,
                     max_output_tokens=settings.GEMINI_MAX_TOKENS,
                     temperature=settings.GEMINI_TEMPERATURE,
+                    thinking_config=types.ThinkingConfig(thinking_level=types.ThinkingLevel.LOW),
+                    media_resolution=types.MediaResolution.MEDIA_RESOLUTION_HIGH,
                     response_mime_type="application/json",
                 )
                 if category_schema:
