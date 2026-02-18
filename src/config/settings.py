@@ -1,8 +1,6 @@
 from pydantic_settings import BaseSettings
 from functools import lru_cache
-import os
 from pathlib import Path
-from typing import Optional
 from loguru import logger
 import sys
 

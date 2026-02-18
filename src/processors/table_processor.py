@@ -1,4 +1,3 @@
-import re
 from typing import Dict, Any, Union
 from pathlib import Path
 import pandas as pd
@@ -43,8 +42,6 @@ class TableProcessor:
                 result = await self._process_discounts(table_path)
             elif category == "加油明细":
                 result = await self._process_refuel_details(table_path)
-            elif category == "抖音":
-                result = await self._process_douyin(table_path)
             elif category == "通联":
                 result = await self._process_tonglian(table_path)
             elif category == "充值明细":
@@ -184,94 +181,6 @@ class TableProcessor:
             'updates': updates,
             'processed_data': processed_data
         }
-
-    async def _process_douyin(self, path: Path) -> Dict[str, Any]:
-        """Process 抖音 table for voucher transactions.
-
-        Args:
-            path: Path to the Douyin transaction file
-
-        Returns:
-            Dictionary containing processed data and update instructions
-        """
-        try:
-            df = pd.read_excel(
-                path, usecols=['核销时间', '商品名称', '实际核销数量', '订单实收', '商家应得'])
-
-            # Convert verification time strings to datetime
-            df['核销时间'] = pd.to_datetime(df['核销时间'])
-
-            mask = (df['核销时间'] >= self.shift_config.work_start_time) & (
-                df['核销时间'] <= self.shift_config.shift_time)
-
-            filtered_df = df[mask]
-
-            # Extract voucher amounts and calculate total value
-            def extract_voucher_amount(product_name: str) -> float:
-                try:
-                    # 使用正则表达式提取 "元" 之前的数字
-                    match = re.search(r'(\d+)元', product_name)
-                    if match:
-                        amount = float(match.group(1))
-                        return amount
-                    else:
-                        logger.warning(
-                            f"Could not extract voucher amount from: {product_name}")
-                        return 0.0
-                except Exception:
-                    logger.warning(
-                        f"Could not extract voucher amount from: {product_name}")
-                    return 0.0
-
-            filtered_df['voucher_amount'] = filtered_df['商品名称'].apply(
-                extract_voucher_amount)
-            total_voucher_value = (
-                filtered_df['voucher_amount'] * filtered_df['实际核销数量']).sum()
-
-            # Calculate required metrics
-            total_received = filtered_df['订单实收'].sum()
-            total_merchant_revenue = filtered_df['商家应得'].sum()
-            total_discount = total_voucher_value - total_received
-            handling_fee = total_received - total_merchant_revenue
-            gas_quantity = total_voucher_value / \
-                self.shift_config.gas_price if self.shift_config.gas_price > 0 else 0
-
-            p = {
-                'gas_quantity': round(gas_quantity / 3, 2),
-                'total_discount': round(total_discount / 3, 2),
-                'handling_fee': round(handling_fee / 3, 2),
-                'merchant_revenue': round(total_merchant_revenue / 3, 2)
-            }
-
-            # Prepare updates similar to other methods
-            updates = [{
-                'sheet': '调价前',
-                'updates': [
-                    {'row': 81, 'column': 'E',
-                        'value': p['handling_fee']},
-                    {'row': 93, 'column': 'C',
-                        'value': p['merchant_revenue']}
-                ]
-            },
-                {
-                'sheet': '油品优惠明细 2',
-                'date': self.shift_config.date.day,
-                'updates': [
-                    {'column': 'AY', 'value': p['gas_quantity']},
-                    {'column': 'AZ',
-                        'value': p['total_discount']},
-                ]
-            }
-            ]
-
-            return {
-                'updates': updates,
-                'processed_data': p
-            }
-
-        except Exception as e:
-            logger.error(f"Error processing Douyin table: {str(e)}")
-            raise
 
     async def _process_tonglian(self, path: Path) -> Dict[str, Any]:
         """Process 通联 table"""

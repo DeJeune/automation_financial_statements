@@ -1,4 +1,4 @@
-from typing import Dict, Any, Union, List
+from typing import Dict, Any, Union
 import json
 import asyncio
 from pathlib import Path
@@ -6,9 +6,8 @@ from google import genai
 from google.genai import types
 from PIL import Image
 from src.config.settings import get_settings
-from src.prompts.invoice_recognition import get_invoice_recognition_messages, INVOICE_SYSTEM_PROMPT
+from src.prompts.invoice_recognition import get_invoice_recognition_messages, get_category_schema, INVOICE_SYSTEM_PROMPT
 from src.utils.logger import logger
-from src.processors.excel_updater import ExcelUpdater
 from src.config.shift_config import ShiftConfig
 from src.utils.value_parser import parse_numeric_value
 
@@ -101,6 +100,9 @@ class InvoiceProcessor:
                 result = await self._process_pos(processed_data)
             elif category == "超市销售收入":
                 result = await self._process_supermarket(processed_data)
+            elif category == "抖音":
+                result = await self._process_douyin(processed_data)
+                
 
             return result
 
@@ -353,10 +355,21 @@ class InvoiceProcessor:
             # Wait for rate limit
             await self._wait_for_rate_limit()
 
-            # Get category-specific prompts
+            # Get category-specific prompts and schema
             messages = get_invoice_recognition_messages(category, image_name)
+            category_schema = get_category_schema(category)
 
             try:
+                # Build config with structured output schema
+                config = types.GenerateContentConfig(
+                    system_instruction=INVOICE_SYSTEM_PROMPT,
+                    max_output_tokens=settings.GEMINI_MAX_TOKENS,
+                    temperature=settings.GEMINI_TEMPERATURE,
+                    response_mime_type="application/json",
+                )
+                if category_schema:
+                    config.response_schema = category_schema
+
                 # Call Gemini API with image and handle rate limits
                 max_retries = 3
                 retry_count = 0
@@ -364,23 +377,17 @@ class InvoiceProcessor:
 
                 while retry_count < max_retries:
                     try:
-                        # Call Gemini API with image
                         response = self.client.models.generate_content(
                             model=self.model,
-                            config=types.GenerateContentConfig(
-                                system_instruction=INVOICE_SYSTEM_PROMPT,
-                                max_output_tokens=settings.GEMINI_MAX_TOKENS,
-                                temperature=settings.GEMINI_TEMPERATURE
-                            ),
+                            config=config,
                             contents=[messages[1]["content"], image]
                         )
-                        break  # If successful, break the retry loop
+                        break
                     except Exception as api_error:
                         retry_count += 1
                         if "Rate limit exceeded" in str(api_error) or "quota exceeded" in str(api_error).lower():
                             if retry_count < max_retries:
-                                wait_time = (2 ** retry_count) * \
-                                    5  # Exponential backoff
+                                wait_time = (2 ** retry_count) * 5
                                 logger.warning(
                                     f"Rate limit hit, waiting {wait_time} seconds before retry {retry_count}/{max_retries}")
                                 await asyncio.sleep(wait_time)
@@ -395,37 +402,10 @@ class InvoiceProcessor:
                 if not response or not response.text:
                     raise ValueError("Empty response from API")
 
-                # Log the raw response
                 logger.info(f"Raw API response: {response.text}")
 
-                try:
-                    # Clean response text and handle markdown formatting
-                    response_text = response.text.strip().replace(
-                        '```json', '').replace('```', '').strip()
-                    structured_data = json.loads(response_text)
-                except json.JSONDecodeError:
-                    # Find first { and last } with proper nesting
-                    stack = []
-                    first_brace = response_text.find('{')
-                    last_brace = -1
+                structured_data = json.loads(response.text)
 
-                    for i, c in enumerate(response_text[first_brace:], start=first_brace):
-                        if c == '{':
-                            stack.append(i)
-                        elif c == '}':
-                            if stack:
-                                stack.pop()
-                                if not stack:  # Found matching closing brace
-                                    last_brace = i
-
-                    if first_brace >= 0 and last_brace > first_brace:
-                        json_str = response_text[first_brace:last_brace+1]
-                        structured_data = json.loads(json_str)
-                    else:
-                        raise ValueError(
-                            "No properly nested JSON found in response")
-
-                # Validate structured data
                 if not isinstance(structured_data, dict) or not structured_data:
                     raise ValueError(
                         "Response structure validation failed - expected non-empty dictionary")
@@ -446,6 +426,57 @@ class InvoiceProcessor:
         except Exception as e:
             logger.error(f"Error processing invoice image: {str(e)}")
             raise
+    
+    async def _process_douyin(self, processed_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Process 抖音 invoice data from Gemini recognition result.
+
+        Args:
+            processed_data: Recognized data with 用户侧划线价合计, 订单实收合计, 预计收入合计
+
+        Returns:
+            Dictionary containing processed data and update instructions
+        """
+        total_voucher_value = parse_numeric_value(processed_data["用户侧划线价合计"])
+        total_received = parse_numeric_value(processed_data["订单实收合计"])
+        total_merchant_revenue = parse_numeric_value(processed_data["预计收入合计"])
+
+        total_discount = total_voucher_value - total_received
+        handling_fee = total_received - total_merchant_revenue
+        gas_quantity = total_voucher_value / \
+            self.shift_config.gas_price if self.shift_config.gas_price > 0 else 0
+
+        p = {
+            'gas_quantity': round(gas_quantity / 3, 2),
+            'total_discount': round(total_discount / 3, 2),
+            'handling_fee': round(handling_fee / 3, 2),
+            'merchant_revenue': round(total_merchant_revenue / 3, 2)
+        }
+
+        updates = [{
+            'sheet': '调价前',
+            'updates': [
+                {'row': 81, 'column': 'E',
+                    'value': p['handling_fee']},
+                {'row': 93, 'column': 'C',
+                    'value': p['merchant_revenue']}
+            ]
+        },
+            {
+            'sheet': '油品优惠明细 2',
+            'date': self.shift_config.date.day,
+            'updates': [
+                {'column': 'AY', 'value': p['gas_quantity']},
+                {'column': 'AZ',
+                    'value': p['total_discount']},
+            ]
+        }
+        ]
+
+        return {
+            'updates': updates,
+            'processed_data': p
+        }
+
 
     def preprocess_image(self, image: Image.Image) -> Image.Image:
         """
