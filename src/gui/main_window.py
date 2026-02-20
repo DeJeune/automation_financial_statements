@@ -4,13 +4,13 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QHeaderView, QApplication, QScrollArea, QSplitter,
                                QDateEdit, QDateTimeEdit, QDoubleSpinBox, QTabWidget,
                                QTextEdit, QSizePolicy, QFrame)
-from PySide6.QtCore import Qt, QSize, Signal, QObject, QThread, QEvent, QDate, QDateTime, QTimer
+from PySide6.QtCore import QSize, Qt, Signal, QObject, QThread, QEvent, QDate, QDateTime, QTimer
 from PySide6.QtGui import QColor, QDropEvent, QImage, QKeyEvent, QActionGroup
 from pathlib import Path
 import asyncio
 import shutil
 from typing import Any, Dict, List
-from datetime import datetime
+from datetime import date, datetime
 import json
 from src.config.shift_config import ShiftConfig
 from src.processors.excel_updater import ExcelUpdater
@@ -19,6 +19,7 @@ from src.processors.table_processor import TableProcessor
 from src.utils.logger import logger
 from src.gui.components.preview import TablePreviewDialog, ImagePreviewDialog
 from src.utils.theme_manager import ThemeManager
+from typing import cast
 import pandas as pd
 import platform
 
@@ -129,10 +130,10 @@ class ImageSaveWorker(QThread):
             # 对于PNG格式，使用压缩级别90
             if self.format_name == 'PNG':
                 success = self.image.save(
-                    str(self.file_path), self.format_name, quality=90)
+                    str(self.file_path), quality=90)
             else:
                 success = self.image.save(
-                    str(self.file_path), self.format_name, quality=95)
+                    str(self.file_path), quality=95)
 
             if not success:
                 self.finished.emit(False, "保存图片失败")
@@ -183,7 +184,7 @@ class LogViewer(QWidget):
         # Create log text area
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
-        self.log_text.setLineWrapMode(QTextEdit.NoWrap)
+        self.log_text.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         self.log_text.setStyleSheet("""
             QTextEdit {
                 background-color: #1e1e1e;
@@ -236,6 +237,8 @@ class NoScrollDateTimeEdit(QDateTimeEdit):
         event.ignore()
 
 
+
+
 class MainWindow(QMainWindow):
     """Main window for the invoice processing application"""
 
@@ -270,10 +273,14 @@ class MainWindow(QMainWindow):
         self.theme_manager = ThemeManager()
 
         # Track uploaded files and their status
-        self.uploaded_files: Dict[str, Path] = {}
+        self.uploaded_files: Dict[str, List[Path]] = {}
         self.processing_status: Dict[str, str] = {}
         self.processing_results: Dict[str, dict] = {}
         self.pending_updates = []
+
+        # Accumulation tracking for multi-image categories
+        self._category_pending_count: Dict[str, int] = {}
+        self._category_partial_results: Dict[str, List[dict]] = {}
 
         self.active_workers: List[QThread] = []
 
@@ -289,10 +296,12 @@ class MainWindow(QMainWindow):
 
         # Initialize with current date and time
         current_datetime = QDateTime.currentDateTime()
+        current_date = QDate.currentDate()
+        current_dt = current_datetime.toPython()
         self.shift_config = ShiftConfig(
-            date=QDate.currentDate().toPython(),
-            work_start_time=current_datetime.toPython(),
-            shift_time=current_datetime.toPython(),
+            date= date(current_date.year(), current_date.month(), current_date.day()),
+            work_start_time=cast(datetime, current_dt),
+            shift_time=cast(datetime, current_dt),
             gas_price=8.23
         )
 
@@ -315,11 +324,11 @@ class MainWindow(QMainWindow):
         self.apply_theme()
 
         # Create main horizontal splitter
-        main_splitter = QSplitter(Qt.Horizontal)
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
 
         # Create tab widget for sidebar
         sidebar = QTabWidget()
-        sidebar.setTabPosition(QTabWidget.West)  # Tabs on the left side
+        sidebar.setTabPosition(QTabWidget.TabPosition.North)
 
         # Create main content widget
         main_content = QWidget()
@@ -327,16 +336,16 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins
 
         # Create vertical splitter for main content area
-        content_splitter = QSplitter(Qt.Vertical)
+        content_splitter = QSplitter(Qt.Orientation.Vertical)
 
         # Create scroll area for upload section
         upload_scroll = QScrollArea()
         upload_scroll.setWidgetResizable(True)
         upload_scroll.setHorizontalScrollBarPolicy(
-            Qt.ScrollBarAlwaysOff)  # 禁用水平滚动条
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)  # 禁用水平滚动条
         upload_widget = QWidget()
         upload_widget.setSizePolicy(
-            QSizePolicy.Expanding, QSizePolicy.Preferred)  # 让widget能够水平扩展
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)  # 让widget能够水平扩展
         upload_layout = QVBoxLayout(upload_widget)
         upload_layout.setContentsMargins(10, 10, 10, 10)
         upload_layout.setSpacing(10)
@@ -344,7 +353,7 @@ class MainWindow(QMainWindow):
         # Output table section
         output_group = QGroupBox("输出表格")
         output_group.setSizePolicy(
-            QSizePolicy.Expanding, QSizePolicy.Preferred)  # 让GroupBox能够水平扩展
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)  # 让GroupBox能够水平扩展
         output_layout = QVBoxLayout()
         output_layout.setContentsMargins(5, 5, 5, 5)
         output_layout.setSpacing(5)
@@ -352,7 +361,7 @@ class MainWindow(QMainWindow):
         # Create table upload row
         table_row = QWidget()
         table_row.setAcceptDrops(True)
-        table_row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        table_row.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         # Enable copy-paste support by installing event filter and registering the widget
         table_row.installEventFilter(self)
 
@@ -363,12 +372,15 @@ class MainWindow(QMainWindow):
         # Add row content
         self.table_status_label = QLabel("拖放表格、点击上传或按Ctrl+V粘贴")
         self.table_status_label.setSizePolicy(
-            QSizePolicy.Expanding, QSizePolicy.Preferred)  # 让状态标签能够自适应宽度
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)  # 让状态标签能够自适应宽度
         self.table_status_label.setMinimumWidth(100)  # 减小最小宽度
 
         upload_table_btn = QPushButton("上传")
         upload_table_btn.setMinimumWidth(50)  # 减小按钮最小宽度
         upload_table_btn.setMaximumWidth(80)  # 限制最大宽度
+        upload_table_btn.clicked.connect(
+            lambda checked, c="output_table": self._upload_table_file(c)
+        )
 
         paste_table_btn = QPushButton("粘贴")
         paste_table_btn.setMinimumWidth(50)  # 减小按钮最小宽度
@@ -404,14 +416,14 @@ class MainWindow(QMainWindow):
         date_label = QLabel("表格日期:")
         self.date_selector = NoScrollDateEdit()  # Use custom widget
         self.date_selector.setCalendarPopup(True)
-        self.date_selector.setDate(self.shift_config.date)
+        self.date_selector.setDate(self.shift_config.date)  # type: ignore[arg-type]
         self.date_selector.dateChanged.connect(self._on_date_changed)
 
         # Work start time selector
         work_start_label = QLabel("上班时间:")
         self.work_start_selector = NoScrollDateTimeEdit()  # Use custom widget
         self.work_start_selector.setDisplayFormat(self._get_datetime_format())
-        self.work_start_selector.setDateTime(self.shift_config.work_start_time)
+        self.work_start_selector.setDateTime(self.shift_config.work_start_time)  # type: ignore[arg-type]
         self.work_start_selector.dateTimeChanged.connect(
             self._on_work_start_time_changed)
 
@@ -430,7 +442,7 @@ class MainWindow(QMainWindow):
         shift_time_label = QLabel("交班时间:")
         self.shift_time_selector = NoScrollDateTimeEdit()  # Use custom widget
         self.shift_time_selector.setDisplayFormat(self._get_datetime_format())
-        self.shift_time_selector.setDateTime(self.shift_config.shift_time)
+        self.shift_time_selector.setDateTime(self.shift_config.shift_time)  # type: ignore[arg-type]
         self.shift_time_selector.dateTimeChanged.connect(
             self._on_shift_time_changed)
 
@@ -468,7 +480,7 @@ class MainWindow(QMainWindow):
             row_widget = QWidget()
             row_widget.setAcceptDrops(True)
             row_widget.setSizePolicy(
-                QSizePolicy.Expanding, QSizePolicy.Preferred)
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
             row_layout = QHBoxLayout(row_widget)
             row_layout.setContentsMargins(10, 5, 10, 5)
@@ -480,12 +492,15 @@ class MainWindow(QMainWindow):
 
             status_label = QLabel("拖放图片、点击上传或按Ctrl+V粘贴")
             status_label.setSizePolicy(
-                QSizePolicy.Expanding, QSizePolicy.Preferred)
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
             status_label.setMinimumWidth(100)  # 减小最小宽度
 
             upload_btn = QPushButton("上传")
             upload_btn.setMinimumWidth(50)
             upload_btn.setMaximumWidth(80)
+            upload_btn.clicked.connect(
+                lambda checked, c=category: self._upload_file(c)
+            )
 
             paste_btn = QPushButton("粘贴")
             paste_btn.setMinimumWidth(50)
@@ -499,11 +514,19 @@ class MainWindow(QMainWindow):
             row_widget.dropEvent = lambda e, c=category: self._handle_row_drop(
                 e, c)
 
+            clear_btn = QPushButton("清除")
+            clear_btn.setMinimumWidth(50)
+            clear_btn.setMaximumWidth(80)
+            clear_btn.clicked.connect(
+                lambda checked, c=category: self._clear_category(c)
+            )
+
             # 修改行布局中组件的添加方式
             row_layout.addWidget(category_label, 0)  # 类别标签不拉伸
             row_layout.addWidget(status_label, 1)  # 状态标签占用剩余空间
             row_layout.addWidget(paste_btn, 0)  # 按钮不拉伸
             row_layout.addWidget(upload_btn, 0)  # 按钮不拉伸
+            row_layout.addWidget(clear_btn, 0)  # 清除按钮
 
             required_layout.addWidget(row_widget)
             self.required_rows[category] = (row_widget, status_label)
@@ -525,10 +548,10 @@ class MainWindow(QMainWindow):
             row_widget = QWidget()
             row_widget.setAcceptDrops(True)
             row_widget.setSizePolicy(
-                QSizePolicy.Expanding, QSizePolicy.Preferred)
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
             # Enable focus and keyboard events
-            row_widget.setFocusPolicy(Qt.StrongFocus)
+            row_widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
             # Add event filters for hover and keyboard events
             row_widget.installEventFilter(self)
@@ -540,11 +563,11 @@ class MainWindow(QMainWindow):
             category_label = QLabel(category)
             category_label.setMinimumWidth(60)
             category_label.setSizePolicy(
-                QSizePolicy.Preferred, QSizePolicy.Preferred)
+                QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
             status_label = QLabel("拖放表格、点击上传或按Ctrl+V粘贴")
             status_label.setMinimumWidth(150)
             status_label.setSizePolicy(
-                QSizePolicy.Preferred, QSizePolicy.Preferred)
+                QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
             upload_btn = QPushButton("上传")
             upload_btn.setMinimumWidth(60)
             paste_btn = QPushButton("粘贴")
@@ -592,20 +615,20 @@ class MainWindow(QMainWindow):
             row_widget = QWidget()
             row_widget.setAcceptDrops(True)
             row_widget.setSizePolicy(
-                QSizePolicy.Expanding, QSizePolicy.Preferred)
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
-            row_widget.setFocusPolicy(Qt.StrongFocus)
+            row_widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             row_widget.installEventFilter(self)
             row_layout = QHBoxLayout(row_widget)
             row_layout.setContentsMargins(10, 5, 10, 5)
             category_label = QLabel(category)
             category_label.setMinimumWidth(60)
             category_label.setSizePolicy(
-                QSizePolicy.Preferred, QSizePolicy.Preferred)
+                QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
             status_label = QLabel("拖放表格、点击上传或按Ctrl+V粘贴")
             status_label.setMinimumWidth(150)
             status_label.setSizePolicy(
-                QSizePolicy.Preferred, QSizePolicy.Preferred)
+                QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
             upload_btn = QPushButton("上传")
             upload_btn.setMinimumWidth(60)
             paste_btn = QPushButton("粘贴")
@@ -642,9 +665,9 @@ class MainWindow(QMainWindow):
             row_widget = QWidget()
             row_widget.setAcceptDrops(True)
             row_widget.setSizePolicy(
-                QSizePolicy.Expanding, QSizePolicy.Preferred)
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
-            row_widget.setFocusPolicy(Qt.StrongFocus)
+            row_widget.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             row_widget.installEventFilter(self)
 
             row_layout = QHBoxLayout(row_widget)
@@ -653,11 +676,11 @@ class MainWindow(QMainWindow):
             category_label = QLabel(category)
             category_label.setMinimumWidth(60)
             category_label.setSizePolicy(
-                QSizePolicy.Preferred, QSizePolicy.Preferred)
+                QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
             status_label = QLabel("拖放图片、点击上传或按Ctrl+V粘贴")
             status_label.setMinimumWidth(150)
             status_label.setSizePolicy(
-                QSizePolicy.Preferred, QSizePolicy.Preferred)
+                QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
             upload_btn = QPushButton("上传")
             upload_btn.setMinimumWidth(60)
             paste_btn = QPushButton("粘贴")
@@ -675,11 +698,18 @@ class MainWindow(QMainWindow):
             row_widget.dropEvent = lambda e, c=category: self._handle_row_drop(
                 e, c)
 
+            clear_btn = QPushButton("清除")
+            clear_btn.setMinimumWidth(60)
+            clear_btn.clicked.connect(
+                lambda checked, c=category: self._clear_category(c)
+            )
+
             row_layout.addWidget(category_label)
             row_layout.addWidget(status_label)  # 移除stretch=1
             row_layout.addStretch()  # 添加弹性空间
             row_layout.addWidget(paste_btn)
             row_layout.addWidget(upload_btn)
+            row_layout.addWidget(clear_btn)
 
             optional_layout.addWidget(row_widget)
             self.optional_rows[category] = (row_widget, status_label)
@@ -829,8 +859,9 @@ class MainWindow(QMainWindow):
                 status_label = self.table_status_label
                 self.output_table_path = file_path
             else:
-                _, status_label = self.required_table_rows.get(
+                row_tuple = self.required_table_rows.get(
                     category) or self.optional_table_rows.get(category)
+                _, status_label = row_tuple if row_tuple else (None, None)
 
             if status_label:
                 status_label.setText("处理中...")
@@ -838,12 +869,12 @@ class MainWindow(QMainWindow):
 
             # 删除之前的文件（如果存在）
             if category in self.uploaded_files:
-                old_file = self.uploaded_files[category]
-                try:
-                    if old_file.exists():
-                        old_file.unlink()
-                except Exception as e:
-                    logger.error(f"删除旧文件失败: {str(e)}")
+                for old_file in self.uploaded_files[category]:
+                    try:
+                        if old_file.exists():
+                            old_file.unlink()
+                    except Exception as e:
+                        logger.error(f"删除旧文件失败: {str(e)}")
 
             # 根据类别决定文件名和目标路径
             if category == "output_table":
@@ -859,7 +890,7 @@ class MainWindow(QMainWindow):
             shutil.copy2(file_path, dest_path)
 
             # Update tracking for all categories (including output_table)
-            self.uploaded_files[category] = dest_path
+            self.uploaded_files[category] = [dest_path]
             self.processing_status[category] = "已上传"
             self.processing_results[category] = {}  # Initialize empty results
 
@@ -909,17 +940,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "错误", "不支持的图片文件类型，请上传JPG、PNG或BMP文件")
                 return
 
-            # 删除之前的文件（如果存在）
-            if category in self.uploaded_files:
-                old_file = self.uploaded_files[category]
-                try:
-                    if old_file.exists():
-                        old_file.unlink()
-                except Exception as e:
-                    logger.error(f"删除旧文件失败: {str(e)}")
-
             # Generate unique filename and save - preserve original extension
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             original_extension = file_path.suffix.lower()  # 保持原始扩展名
             new_filename = f"{category}_{timestamp}{original_extension}"
             dest_path = self.image_dir / new_filename
@@ -927,15 +949,19 @@ class MainWindow(QMainWindow):
             # Copy file to destination
             shutil.copy2(file_path, dest_path)
 
-            # Update tracking
-            self.uploaded_files[category] = dest_path
+            # Append to tracking list
+            if category not in self.uploaded_files:
+                self.uploaded_files[category] = []
+            self.uploaded_files[category].append(dest_path)
             self.processing_status[category] = "已上传"
 
             # 获取对应的状态标签
-            _, status_label = self.required_rows.get(
+            row_tuple = self.required_rows.get(
                 category) or self.optional_rows.get(category)
+            _, status_label = row_tuple if row_tuple else (None, None)
+            count = len(self.uploaded_files[category])
             if status_label:
-                status_label.setText("已上传")
+                status_label.setText(f"已上传 ({count}张)" if count > 1 else "已上传")
 
             self._update_table(category)
 
@@ -971,19 +997,36 @@ class MainWindow(QMainWindow):
             # Initialize pending updates list
             self.pending_updates = []
 
-            # Track processing completion
-            self.files_to_process = len(self.uploaded_files)
+            # Reset accumulation tracking
+            self._category_pending_count = {}
+            self._category_partial_results = {}
 
-            # Process each file
-            for category, file_path in self.uploaded_files.items():
-                if category == "output_table" or self.processing_status[category] == "处理中":
-                    self.files_to_process -= 1
+            # Count total files to process
+            total_files = 0
+            for category, file_list in self.uploaded_files.items():
+                if category == "output_table":
+                    continue
+                if self.processing_status.get(category) == "处理中":
+                    continue
+                if category in REQUIRED_TABLE_CATEGORIES + OPTIONAL_TABLE_CATEGORIES:
+                    total_files += 1  # Tables are single file
+                elif category in REQUIRED_IMAGE_CATEGORIES + OPTIONAL_IMAGE_CATEGORIES:
+                    total_files += len(file_list)
+
+            self.files_to_process = total_files
+
+            # Process each category
+            for category, file_list in self.uploaded_files.items():
+                if category == "output_table" or self.processing_status.get(category) == "处理中":
                     continue
 
                 if category in REQUIRED_TABLE_CATEGORIES + OPTIONAL_TABLE_CATEGORIES:
-                    self._process_single_table(category, file_path)
+                    self._process_single_table(category, file_list[0])
                 elif category in REQUIRED_IMAGE_CATEGORIES + OPTIONAL_IMAGE_CATEGORIES:
-                    self._process_single_image(category, file_path)
+                    self._category_pending_count[category] = len(file_list)
+                    self._category_partial_results[category] = []
+                    for file_path in file_list:
+                        self._process_single_image(category, file_path)
 
         except Exception as e:
             logger.error(f"Error in process_all_files: {str(e)}")
@@ -1107,16 +1150,34 @@ class MainWindow(QMainWindow):
     def _handle_processing_complete(self, result: Dict, category: str) -> None:
         """Handle successful processing completion"""
         try:
-            # Store the processed data
-            self.processing_results[category] = result.get(
-                'processed_data', {})
-
-            # Add updates to pending list if present
+            # Always add updates directly — ExcelUpdater handles accumulation
             if 'updates' in result:
                 self.pending_updates.extend(result['updates'])
 
-            self.processing_status[category] = "完成"
-            self._update_table(category)
+            if category in self._category_pending_count:
+                # Multi-image: accumulate processed_data for display
+                self._category_partial_results[category].append(result)
+                self._category_pending_count[category] -= 1
+
+                if self._category_pending_count[category] <= 0:
+                    # All images done — merge processed_data for display only
+                    merged_data: Dict[str, float] = {}
+                    for r in self._category_partial_results[category]:
+                        for key, value in r.get('processed_data', {}).items():
+                            merged_data[key] = round(merged_data.get(key, 0) + value, 2)
+                    self.processing_results[category] = merged_data
+                    self.processing_status[category] = "完成"
+                    self._update_table(category)
+                else:
+                    remaining = self._category_pending_count[category]
+                    self.processing_status[category] = f"处理中 ({remaining}张剩余)"
+                    self._update_table(category)
+            else:
+                # Single-file category
+                self.processing_results[category] = result.get(
+                    'processed_data', {})
+                self.processing_status[category] = "完成"
+                self._update_table(category)
 
             # Use QTimer to check completion status in next event loop
             QTimer.singleShot(0, self._check_all_processing_complete)
@@ -1127,6 +1188,10 @@ class MainWindow(QMainWindow):
 
     def _handle_processing_error(self, error_message: str, category: str) -> None:
         """Handle processing error"""
+        # Decrement pending count for multi-image categories
+        if category in self._category_pending_count:
+            self._category_pending_count[category] -= 1
+
         self.processing_status[category] = f"错误: {error_message}"
         self._update_table(category)
 
@@ -1158,6 +1223,7 @@ class MainWindow(QMainWindow):
             logger.info(
                 f"Updating Excel file at {datetime.now()}")
             # Create and start the update worker
+            assert self.output_table_path is not None
             self.update_worker = ExcelUpdateWorker(
                 self.output_table_path,
                 self.pending_updates
@@ -1200,16 +1266,20 @@ class MainWindow(QMainWindow):
             category: The category of the file
             row: The row number to update
         """
-        file_path = self.uploaded_files.get(category)
-        if not file_path:
+        file_list = self.uploaded_files.get(category)
+        if not file_list:
             return
+        file_path = file_list[-1]  # Show the last uploaded file
 
         # Category
         self.result_table.setItem(row, 0, QTableWidgetItem(category))
 
         # Filename - make it clickable
-        filename_item = QTableWidgetItem(file_path.name)
-        filename_item.setData(Qt.UserRole, str(file_path))
+        if len(file_list) > 1:
+            filename_item = QTableWidgetItem(f"{file_path.name} ({len(file_list)}张)")
+        else:
+            filename_item = QTableWidgetItem(file_path.name)
+        filename_item.setData(Qt.ItemDataRole.UserRole, str(file_path))
         filename_item.setForeground(
             QColor(0, 0, 255))  # Make it look clickable
         filename_item.setToolTip("点击预览图片")
@@ -1263,7 +1333,7 @@ class MainWindow(QMainWindow):
         # Create and configure the result item
         result_item = QTableWidgetItem(result_text)
         result_item.setTextAlignment(
-            Qt.AlignTop | Qt.AlignLeft)  # Align text to top-left
+            Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)  # Align text to top-left
         self.result_table.setItem(row, 3, result_item)
 
         # Action button
@@ -1281,7 +1351,7 @@ class MainWindow(QMainWindow):
         # Adjust row height to show all content
         self.result_table.resizeRowToContents(row)
 
-    def _update_table(self, category: str = None) -> None:
+    def _update_table(self, category: str | None = None) -> None:
         """Update the results table
         Args:
             category: Optional category to update. If None, update all rows
@@ -1297,7 +1367,8 @@ class MainWindow(QMainWindow):
             # Find the row for this category
             row = -1
             for i in range(self.result_table.rowCount()):
-                if self.result_table.item(i, 0) and self.result_table.item(i, 0).text() == category:
+                item = self.result_table.item(i, 0)
+                if item is not None and item.text() == category:
                     row = i
                     break
 
@@ -1326,7 +1397,7 @@ class MainWindow(QMainWindow):
         if column == 1:  # Filename column
             item = self.result_table.item(row, column)
             if item:
-                file_path = Path(item.data(Qt.UserRole))
+                file_path = Path(item.data(Qt.ItemDataRole.UserRole))
 
                 # 获取文件类型（从第一列）
                 category_item = self.result_table.item(row, 0)
@@ -1356,10 +1427,12 @@ class MainWindow(QMainWindow):
                         else:
                             QMessageBox.warning(self, "错误", "不支持的表格文件类型")
                     elif category in REQUIRED_IMAGE_CATEGORIES + OPTIONAL_IMAGE_CATEGORIES:
-                        # 图片预览
-                        self.preview_dialog = ImagePreviewDialog(
-                            file_path, self)
-                        self.preview_dialog.show()
+                        # 图片预览 — pass all images for this category
+                        image_list = self.uploaded_files.get(category, [])
+                        if image_list:
+                            self.preview_dialog = ImagePreviewDialog(
+                                image_list, self)
+                            self.preview_dialog.show()
                 except Exception as e:
                     print(f"Error accessing file: {str(e)}")
                     QMessageBox.critical(self, "错误", f"无法访问文件: {str(e)}")
@@ -1367,7 +1440,8 @@ class MainWindow(QMainWindow):
     def _validate_required_files(self) -> bool:
         """验证所有必填文件和表格文件已上传"""
         has_required = all(
-            category in self.uploaded_files for category in REQUIRED_IMAGE_CATEGORIES + REQUIRED_TABLE_CATEGORIES)
+            category in self.uploaded_files and len(self.uploaded_files[category]) > 0
+            for category in REQUIRED_IMAGE_CATEGORIES + REQUIRED_TABLE_CATEGORIES)
         has_table = self.output_table_path is not None
         if not has_table:
             QMessageBox.warning(self, "警告", "请先上传输出表格文件")
@@ -1402,25 +1476,35 @@ class MainWindow(QMainWindow):
                     break
 
         if category:
-            if event.type() == QEvent.Enter:
+            if event.type() == QEvent.Type.Enter:
                 self.current_hover_category = category
-                obj.setProperty("hovered", True)
-                obj.style().unpolish(obj)
-                obj.style().polish(obj)
+                widget: QWidget = obj  # type: ignore[assignment]
+                widget.setProperty("hovered", True)
+                widget.style().unpolish(widget)
+                widget.style().polish(widget)
 
                 # Get the appropriate status label
                 status_label = None
                 if category == "output_table":
                     status_label = self.table_status_label
                 else:
-                    _, status_label = (self.required_rows.get(category) or
-                                       self.optional_rows.get(category) or
-                                       self.required_table_rows.get(category) or
-                                       self.optional_table_rows.get(category))
+                    row_tuple = (self.required_rows.get(category) or
+                                self.optional_rows.get(category) or
+                                self.required_table_rows.get(category) or
+                                self.optional_table_rows.get(category))
+                    _, status_label = row_tuple if row_tuple else (None, None)
+
+                if not status_label:
+                    return True
 
                 # 检查是否已上传文件
-                if category in self.uploaded_files:
-                    status_label.setText("已上传")
+                if category in self.uploaded_files and len(self.uploaded_files[category]) > 0:
+                    count = len(self.uploaded_files[category])
+                    is_image_cat = category in REQUIRED_IMAGE_CATEGORIES + OPTIONAL_IMAGE_CATEGORIES
+                    if is_image_cat and count > 1:
+                        status_label.setText(f"已上传 ({count}张)")
+                    else:
+                        status_label.setText("已上传")
                     return True
 
                 # 获取剪贴板数据
@@ -1455,37 +1539,45 @@ class MainWindow(QMainWindow):
                         status_label.setText("拖放图片、点击上传或按Ctrl+V粘贴")
                 return True
 
-            elif event.type() == QEvent.Leave:
+            elif event.type() == QEvent.Type.Leave:
                 self.current_hover_category = None
-                obj.setProperty("hovered", False)
-                obj.style().unpolish(obj)
-                obj.style().polish(obj)
+                widget: QWidget = obj  # type: ignore[assignment]
+                widget.setProperty("hovered", False)
+                widget.style().unpolish(widget)
+                widget.style().polish(widget)
 
                 # Get the appropriate status label
                 status_label = None
                 if category == "output_table":
                     status_label = self.table_status_label
                 else:
-                    _, status_label = (self.required_rows.get(category) or
-                                       self.optional_rows.get(category) or
-                                       self.required_table_rows.get(category) or
-                                       self.optional_table_rows.get(category))
+                    row_tuple = (self.required_rows.get(category) or
+                                self.optional_rows.get(category) or
+                                self.required_table_rows.get(category) or
+                                self.optional_table_rows.get(category))
+                    _, status_label = row_tuple if row_tuple else (None, None)
 
-                # Check if file is already uploaded for this category
-                if category in self.uploaded_files:
-                    status_label.setText("已上传")
-                else:
-                    # 根据类别显示相应的默认提示文本
-                    if category == "output_table" or category in REQUIRED_TABLE_CATEGORIES + OPTIONAL_TABLE_CATEGORIES:
-                        status_label.setText("拖放表格、点击上传或按Ctrl+V粘贴")
+                if status_label:
+                    # Check if file is already uploaded for this category
+                    if category in self.uploaded_files and len(self.uploaded_files[category]) > 0:
+                        count = len(self.uploaded_files[category])
+                        is_image_cat = category in REQUIRED_IMAGE_CATEGORIES + OPTIONAL_IMAGE_CATEGORIES
+                        if is_image_cat and count > 1:
+                            status_label.setText(f"已上传 ({count}张)")
+                        else:
+                            status_label.setText("已上传")
                     else:
-                        status_label.setText("拖放图片、点击上传或按Ctrl+V粘贴")
+                        # 根据类别显示相应的默认提示文本
+                        if category == "output_table" or category in REQUIRED_TABLE_CATEGORIES + OPTIONAL_TABLE_CATEGORIES:
+                            status_label.setText("拖放表格、点击上传或按Ctrl+V粘贴")
+                        else:
+                            status_label.setText("拖放图片、点击上传或按Ctrl+V粘贴")
                 return True
 
-            elif event.type() == QEvent.KeyPress:
-                key_event = QKeyEvent(event)
-                if (key_event.key() == Qt.Key_V and
-                    key_event.modifiers() == Qt.ControlModifier and
+            elif event.type() == QEvent.Type.KeyPress:
+                key_event: QKeyEvent = event  # type: ignore[assignment]
+                if (key_event.key() == Qt.Key.Key_V and
+                    key_event.modifiers() == Qt.KeyboardModifier.ControlModifier and
                         self.current_hover_category == category):  # Only paste if mouse is hovering
                     # Check if it's a table category
                     self._handle_clipboard_paste(category)
@@ -1570,7 +1662,8 @@ class MainWindow(QMainWindow):
                             extension = '.jpg'
                             format_name = 'JPEG'
                         elif 'x-qt-image' in formats:
-                            format_data = mime_data.data('x-qt-image')
+                            qba = mime_data.data('x-qt-image')
+                            format_data = bytes(qba.data())  # type: ignore[arg-type]
                             if format_data.startswith(b'\x89PNG'):
                                 extension = '.png'
                                 format_name = 'PNG'
@@ -1615,22 +1708,17 @@ class MainWindow(QMainWindow):
                 status_label.setText("粘贴失败")
 
     def _handle_save_complete(self, success: bool, error_msg: str, category: str,
-                              temp_path: Path, status_label: QLabel) -> None:
+                              temp_path: Path, status_label: QLabel | None) -> None:
         """Handle image save completion"""
         if success:
-            # 删除之前的文件（如果存在）
-            if category in self.uploaded_files:
-                old_file = self.uploaded_files[category]
-                try:
-                    if old_file.exists():
-                        old_file.unlink()
-                except Exception as e:
-                    logger.error(f"删除旧文件失败: {str(e)}")
-
-            self.uploaded_files[category] = temp_path
+            # Append to tracking list
+            if category not in self.uploaded_files:
+                self.uploaded_files[category] = []
+            self.uploaded_files[category].append(temp_path)
             self.processing_status[category] = "已上传"
+            count = len(self.uploaded_files[category])
             if status_label:
-                status_label.setText("已上传")
+                status_label.setText(f"已上传 ({count}张)" if count > 1 else "已上传")
             self._update_table(category)
         else:
             QMessageBox.critical(self, "错误", f"保存图片失败: {error_msg}")
@@ -1643,17 +1731,54 @@ class MainWindow(QMainWindow):
             self.save_worker.wait()
             self.save_worker.deleteLater()
 
+    def _clear_category(self, category: str) -> None:
+        """Clear all uploaded files for an image category."""
+        if category in self.uploaded_files:
+            for file_path in self.uploaded_files[category]:
+                try:
+                    if file_path.exists():
+                        file_path.unlink()
+                except Exception as e:
+                    logger.error(f"删除文件失败: {str(e)}")
+            self.uploaded_files[category] = []
+
+        self.processing_status.pop(category, None)
+        self.processing_results.pop(category, None)
+
+        # Reset status label
+        _, status_label = (self.required_rows.get(category) or
+                           self.optional_rows.get(category) or
+                           (None, None))
+        if status_label:
+            status_label.setText("拖放图片、点击上传或按Ctrl+V粘贴")
+
+        # Remove from results table
+        for i in range(self.result_table.rowCount()):
+            item = self.result_table.item(i, 0)
+            if item is not None and item.text() == category:
+                self.result_table.removeRow(i)
+                break
+
+    def _upload_table_file(self, category: str) -> None:
+        """Handle table file upload for a specific category."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, f"选择{category}文件", "",
+            "Table Files (*.xlsx *.xls *.csv)"
+        )
+        if file_path:
+            self._handle_table_upload(Path(file_path), category)
+
     def _on_date_changed(self, new_date: QDate) -> None:
         """Handle date selection change"""
-        self.shift_config.date = new_date.toPython()
+        self.shift_config.date = new_date.toPython()  # type: ignore[assignment]
 
     def _on_shift_time_changed(self, new_datetime: QDateTime) -> None:
         """Handle shift time selection change"""
-        self.shift_config.shift_time = new_datetime.toPython()
+        self.shift_config.shift_time = new_datetime.toPython()  # type: ignore[assignment]
 
     def _on_work_start_time_changed(self, new_datetime: QDateTime) -> None:
         """Handle work start time selection change"""
-        self.shift_config.work_start_time = new_datetime.toPython()
+        self.shift_config.work_start_time = new_datetime.toPython()  # type: ignore[assignment]
 
     def _on_gas_price_changed(self, new_price: float) -> None:
         """Handle gas price change"""
@@ -1668,12 +1793,13 @@ class MainWindow(QMainWindow):
         """Perform the actual reset operations without confirmation dialog"""
         try:
             # Delete uploaded files
-            for file_path in self.uploaded_files.values():
-                try:
-                    if file_path.exists():
-                        file_path.unlink()
-                except Exception as e:
-                    logger.error(f"Error deleting file {file_path}: {str(e)}")
+            for file_list in self.uploaded_files.values():
+                for file_path in file_list:
+                    try:
+                        if file_path.exists():
+                            file_path.unlink()
+                    except Exception as e:
+                        logger.error(f"Error deleting file {file_path}: {str(e)}")
 
             # Clean up table directory
             for file_path in self.table_dir.glob('*'):
@@ -1698,6 +1824,8 @@ class MainWindow(QMainWindow):
             self.processing_status.clear()
             self.processing_results.clear()
             self.pending_updates.clear()
+            self._category_pending_count.clear()
+            self._category_partial_results.clear()
             self.output_table_path = None
 
             # Reset status labels
@@ -1730,7 +1858,7 @@ class MainWindow(QMainWindow):
                 try:
                     if self.update_worker.isRunning():
                         self.update_worker.wait()
-                except RuntimeError as e:
+                except RuntimeError:
                     logger.info(
                         "Update worker already deleted. Skipping wait.")
             event.accept()
@@ -1745,15 +1873,15 @@ class MainWindow(QMainWindow):
             self,
             "确认重置",
             "确定要重置所有内容吗？这将清除所有已上传的文件。",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
         )
 
-        if reply == QMessageBox.No:
+        if reply == QMessageBox.StandardButton.No:
             return
 
         self._perform_reset()
-        QMessageBox.information(self, "成功", "已重置所有内容")
+        QMessageBox.information(self, "成功", "已重置所有内容", QMessageBox.StandardButton.Ok)
 
     def _export_output_table(self) -> None:
         """Export the output table to a user-specified location"""
@@ -1774,7 +1902,7 @@ class MainWindow(QMainWindow):
             if dest_path:
                 # Copy the file
                 shutil.copy2(self.output_table_path, dest_path)
-                QMessageBox.information(self, "成功", "表格导出成功")
+                QMessageBox.information(self, "成功", "表格导出成功", QMessageBox.StandardButton.Ok)
         except Exception as e:
             logger.error(f"导出表格错误: {str(e)}")
             QMessageBox.critical(self, "错误", f"导出表格失败: {str(e)}")
@@ -1798,8 +1926,8 @@ class MainWindow(QMainWindow):
     def _create_separator(self) -> QFrame:
         """Create a standard separator line"""
         line = QFrame()
-        line.setFrameShape(QFrame.HLine)
-        line.setFrameShadow(QFrame.Plain)  # 改为Plain而不是Sunken
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setFrameShadow(QFrame.Shadow.Plain)  # 改为Plain而不是Sunken
         line.setStyleSheet("QFrame { background-color: #cccccc; border: none; }")
         line.setFixedHeight(2)  # 使用setFixedHeight替代setMaximumHeight
         return line
