@@ -1,4 +1,4 @@
-from typing import Dict, Any, List
+from typing import Dict, Any, List, cast
 from threading import RLock
 import openpyxl
 from src.utils.logger import logger
@@ -128,8 +128,8 @@ class ExcelUpdater:
         """
         try:
             with ExcelUpdater._global_lock:
-                # Initialize handling_fees dictionary at the start
-                handling_fees = {}
+                # Track accumulated cell values for same-cell updates
+                accumulated_values = {}
 
                 for update in updates:
                     # Validate update format
@@ -146,10 +146,10 @@ class ExcelUpdater:
                                 # Handle product name based updates
                                 for row in sheet.iter_rows(min_row=3):
                                     if row[0].value is not None:
-                                        current_section = row[0].value.strip()
+                                        current_section = cast(str,row[0].value).strip()
                                     if current_section == target_section:
                                         # B column data
-                                        product_name = row[1].value
+                                        product_name = cast(str,row[1].value)
                                         if not product_name:  # Skip empty rows
                                             continue
                                         # Normalize both product names before comparison
@@ -169,27 +169,19 @@ class ExcelUpdater:
                                 row_idx = row_update['row'] - 1
                                 col_idx = self._get_column_index(
                                     row_update['column'])
+                                cell_key = (sheet_name, row_idx + 1, col_idx + 1)
 
-                                # Special handling for handling fees (row 81, column E)
-                                if row_idx + 1 == 81 and row_update['column'] == 'E':
-                                    # Track handling fees for accumulation
-                                    cell_key = (row_idx + 1, col_idx + 1)
-                                    if cell_key not in handling_fees:
-                                        handling_fees[cell_key] = 0
-                                        # Clear existing value when first encountering this cell
-                                        sheet.cell(
-                                            row=row_idx + 1, column=col_idx + 1).value = None
-
-                                    # Accumulate the new value
-                                    handling_fees[cell_key] += row_update['value']
-                                    # Update the cell with accumulated value
+                                if cell_key not in accumulated_values:
+                                    accumulated_values[cell_key] = 0
+                                    # Clear existing value when first encountering this cell
                                     sheet.cell(
-                                        row=row_idx + 1, column=col_idx + 1).value = handling_fees[cell_key]
-                                else:
-                                    # For all other cells, just set the new value
-                                    cell = sheet.cell(
-                                        row=row_idx + 1, column=col_idx + 1)
-                                    cell.value = row_update['value']
+                                        row=row_idx + 1, column=col_idx + 1).value = None
+
+                                # Accumulate the new value
+                                accumulated_values[cell_key] += row_update['value']
+                                # Update the cell with accumulated value
+                                sheet.cell(
+                                    row=row_idx + 1, column=col_idx + 1).value = round(accumulated_values[cell_key], 2)
 
                     elif sheet_name == '油品优惠明细 2':
                         # Handle date based updates
