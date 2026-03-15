@@ -3,6 +3,9 @@ from PySide6.QtWidgets import QApplication
 from PySide6.QtGui import QIcon, QFont
 from pathlib import Path
 from src.gui.main_window import MainWindow
+from src.utils.updater import AppUpdater
+from src.gui.components.update_dialog import UpdateDialog
+from loguru import logger
 import platform
 
 def main():
@@ -24,6 +27,18 @@ def main():
     window = MainWindow()
     window.resize(800, 800)
     window.show()
+
+    # Auto-update check
+    updater = AppUpdater()
+
+    def _on_update_available(version: str, download_url: str, release_notes: str):
+        dialog = UpdateDialog(updater, version, download_url, release_notes, parent=window)
+        dialog.exec()
+
+    updater.update_available.connect(_on_update_available)
+    updater.check_error.connect(lambda msg: logger.debug(f"Update check failed: {msg}"))
+    updater.check_for_updates()
+
     sys.exit(app.exec())
 
 if __name__ == "__main__":

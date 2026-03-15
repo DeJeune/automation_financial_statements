@@ -1,2 +1,6 @@
 [tools]
-python = "3.11.14"
+python = "3.13"
+uv = "latest"
+
+[env]
+UV_PYTHON = { value = "{{ tools.python.path }}", tools = true }
