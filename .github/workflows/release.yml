@@ -57,13 +57,20 @@ jobs:
 
       - name: Build Windows executable
         run: |
+          $ErrorActionPreference = "Stop"
           nuitka --standalone `
             --assume-yes-for-downloads `
             --windows-console-mode=disable `
             --enable-plugin=pyside6 `
+            --nofollow-import-to=google.genai.types `
             --windows-icon-from-ico=assets/app.ico `
             --output-filename=FinancialAutomation main.py
-      
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path "main.dist\FinancialAutomation.exe")) {
+            Write-Error "Build output not found at main.dist\FinancialAutomation.exe"
+            exit 1
+          }
+
       - name: Build installer
         run: makensis /DPRODUCT_VERSION=${{ steps.get-tag.outputs.tag }} installer.nsi
       
