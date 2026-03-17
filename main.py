@@ -1,18 +1,19 @@
 import sys
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 from PySide6.QtGui import QIcon, QFont
-from pathlib import Path
 from src.gui.main_window import MainWindow
 from src.utils.updater import AppUpdater
 from src.gui.components.update_dialog import UpdateDialog
 from loguru import logger
 import platform
+from src.utils.app_paths import get_asset_path, get_log_file_path
 
 def main():
     """Main application entry point"""
     app = QApplication(sys.argv) 
-    app_icon = str(Path(__file__).parent / "assets" / "app.ico")
-    app.setWindowIcon(QIcon(app_icon))
+    app_icon = get_asset_path("app.ico")
+    if app_icon.exists():
+        app.setWindowIcon(QIcon(str(app_icon)))
     
     # 设置全局字体
     if platform.system().lower() == 'windows':
@@ -41,5 +42,23 @@ def main():
 
     sys.exit(app.exec())
 
+
+def _show_startup_error(exc: Exception) -> None:
+    log_file = get_log_file_path()
+    app = QApplication.instance() or QApplication(sys.argv)
+    QMessageBox.critical(
+        None,
+        "启动失败",
+        f"应用启动失败：{exc}\n\n详细日志：{log_file}",
+    )
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        logger.exception("Application startup failed")
+        try:
+            _show_startup_error(exc)
+        except Exception:
+            pass
+        raise

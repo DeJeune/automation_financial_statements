@@ -17,6 +17,7 @@ from src.processors.excel_updater import ExcelUpdater
 from src.processors.invoice_processor import InvoiceProcessor
 from src.processors.table_processor import TableProcessor
 from src.utils.logger import logger
+from src.utils.app_paths import get_log_file_path, get_runtime_subdir
 from src.gui.components.preview import TablePreviewDialog, ImagePreviewDialog
 from src.utils.theme_manager import ThemeManager
 from typing import cast
@@ -204,7 +205,7 @@ class LogViewer(QWidget):
     def update_log(self):
         """Update log content from the log file"""
         try:
-            log_file = Path("logs/app.log")
+            log_file = get_log_file_path()
             if not log_file.exists():
                 return
 
@@ -262,12 +263,9 @@ class MainWindow(QMainWindow):
             self.is_mac = True
             self.is_windows = False
 
-        self.image_dir = Path("images")
-        self.image_dir.mkdir(parents=True, exist_ok=True)
-        self.table_dir = Path("tables")
-        self.table_dir.mkdir(parents=True, exist_ok=True)
-        self.output_dir = Path("output/table")
-        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.image_dir = get_runtime_subdir("images")
+        self.table_dir = get_runtime_subdir("tables")
+        self.output_dir = get_runtime_subdir("output", "table")
 
         # Initialize theme manager
         self.theme_manager = ThemeManager()

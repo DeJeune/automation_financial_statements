@@ -3,6 +3,7 @@ from functools import lru_cache
 from pathlib import Path
 from loguru import logger
 import sys
+from src.utils.app_paths import get_runtime_root
 
 
 class Settings(BaseSettings):
@@ -46,6 +47,7 @@ class Settings(BaseSettings):
         # 可能的配置文件位置
         possible_env_files = [
             Path.cwd() / '.env',  # 当前工作目录
+            get_runtime_root() / '.env',  # 用户数据目录（适用于打包后）
             app_dir / '.env',     # 应用安装目录
             app_dir / 'config' / '.env',  # 应用配置目录
         ]

@@ -1,26 +1,14 @@
 import sys
-import os
 from loguru import logger
-from pathlib import Path
 from src.config.settings import get_settings
+from src.utils.app_paths import get_log_file_path
 
 settings = get_settings()
 
 
 def get_log_path():
     """Get the appropriate log file path for both development and packaged environments"""
-    if getattr(sys, 'frozen', False):
-        # If the application is running in a bundle
-        base_path = Path(sys._MEIPASS) if hasattr(
-            sys, '_MEIPASS') else Path(sys.executable).parent
-    else:
-        # If running in development environment
-        base_path = Path(__file__).parent.parent.parent
-
-    # Create logs directory if it doesn't exist
-    log_dir = base_path / 'logs'
-    log_dir.mkdir(exist_ok=True)
-    return str(log_dir / 'app.log')
+    return str(get_log_file_path())
 
 
 def setup_logger():
