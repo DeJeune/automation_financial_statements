@@ -3,7 +3,7 @@ from functools import lru_cache
 from pathlib import Path
 from loguru import logger
 import sys
-from src.utils.app_paths import get_runtime_root
+from src.utils.app_paths import get_runtime_root, is_packaged_app
 
 
 class Settings(BaseSettings):
@@ -37,7 +37,7 @@ class Settings(BaseSettings):
         3. 应用目录下的默认 .env 文件
         """
         # 获取可执行文件所在目录
-        if getattr(sys, 'frozen', False):
+        if is_packaged_app():
             # 如果是打包后的应用
             app_dir = Path(sys.executable).parent
         else:

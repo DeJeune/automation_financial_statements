@@ -62,7 +62,6 @@ jobs:
             --assume-yes-for-downloads `
             --windows-console-mode=disable `
             --enable-plugin=pyside6 `
-            --nofollow-import-to=google.genai.types `
             --include-data-dir=assets=assets `
             --windows-icon-from-ico=assets/app.ico `
             --output-filename=FinancialAutomation main.py

@@ -78,9 +78,9 @@ format:  ## 格式化代码
 .PHONY: build
 build:  ## 构建可执行文件
 ifeq ($(OS_TYPE),Windows)
-	$(POETRY) run $(BUILD_TOOL) --standalone --msvc=latest --windows-console-mode=disable --enable-plugin=pyside6 --nofollow-import-to=google.genai.types --include-data-dir=assets=assets --windows-icon-from-ico=assets/app.ico --output-dir=dist --output-filename=FinancialAutomation main.py
+	$(POETRY) run $(BUILD_TOOL) --standalone --msvc=latest --windows-console-mode=disable --enable-plugin=pyside6 --include-data-dir=assets=assets --windows-icon-from-ico=assets/app.ico --output-dir=dist --output-filename=FinancialAutomation main.py
 else
-	$(POETRY) run $(BUILD_TOOL) --standalone --enable-plugin=pyside6 --nofollow-import-to=google.genai.types --include-data-dir=assets=assets --output-dir=dist --output-filename=FinancialAutomation main.py
+	$(POETRY) run $(BUILD_TOOL) --standalone --enable-plugin=pyside6 --include-data-dir=assets=assets --output-dir=dist --output-filename=FinancialAutomation main.py
 endif
 
 .PHONY: requirements

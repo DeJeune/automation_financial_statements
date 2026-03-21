@@ -43,22 +43,8 @@ def main():
     sys.exit(app.exec())
 
 
-def _show_startup_error(exc: Exception) -> None:
-    log_file = get_log_file_path()
-    app = QApplication.instance() or QApplication(sys.argv)
-    QMessageBox.critical(
-        None,
-        "启动失败",
-        f"应用启动失败：{exc}\n\n详细日志：{log_file}",
-    )
-
 if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
         logger.exception("Application startup failed")
-        try:
-            _show_startup_error(exc)
-        except Exception:
-            pass
-        raise
