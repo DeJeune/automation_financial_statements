@@ -2,6 +2,8 @@
 
 This project automates the processing and analysis of financial statements using Large Language Models.
 
+支持独立上传日报模板与 T-CD 简表模板，可共用源数据同时填写并分别导出。简表上传油品时间统计、加油明细、充值明细即可填写并交叉校验，油品优惠表可选，详见 [简表填写说明](docs/simple-report.md)。
+
 ## Project Structure
 ```
 .
