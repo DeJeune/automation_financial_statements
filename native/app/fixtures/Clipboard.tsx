@@ -6,6 +6,7 @@ import { Workstation } from "../Workstation";
 
 mount(() => (
   <Workstation
+    persistStations={false}
     clipboard={{
       readFiles: async () => {
         const text = await Clipboard.readText();

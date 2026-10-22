@@ -4,6 +4,7 @@ import { Workstation } from "../Workstation";
 
 mount(() => (
   <Workstation
+    persistStations={false}
     initialFiles={{
       日报模板: ["native/app/fixtures/invalid-daily.xlsx"],
       简表模板: ["native/app/fixtures/simple.xlsx"],

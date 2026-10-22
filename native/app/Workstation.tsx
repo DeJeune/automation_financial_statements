@@ -54,12 +54,53 @@ export function Workstation(
     initialFiles?: Record<string, string[]>;
     clipboard?: UploadClipboard;
     prepare?: (job: Job) => Promise<Prepared>;
+    persistStations?: boolean;
   } = {},
 ) {
   const sessionId = `batch-${Date.now()}`;
   let nextBatch = 1;
   const batches = signal([createBatch(`${sessionId}-1`, 1, p.initialFiles)]);
   const selectedId = signal(batches()[0].id);
+  const stationStorageError = signal("");
+  let canSaveStations = p.persistStations !== false;
+  if (canSaveStations) {
+    try {
+      const saved = Reports.stations();
+      if (saved.stations.length) {
+        const restored = saved.stations.map((station) => {
+          const batch = createBatch(station.id, station.number);
+          batch.name.set(station.name);
+          batch.gasPrice.set(station.gasPrice);
+          return batch;
+        });
+        nextBatch = Math.max(...restored.map((batch) => batch.number));
+        batches.set(restored);
+        selectedId.set(saved.selectedId || restored[0].id);
+      }
+    } catch (e) {
+      // A read error must never replace the user's saved list with a blank one.
+      canSaveStations = false;
+      stationStorageError.set(`无法恢复加油站，暂时不会保存更改：${String(e)}`);
+    }
+  }
+  effect(() => {
+    if (!canSaveStations) return;
+    const stations = batches().map((batch) => ({
+      id: batch.id,
+      number: batch.number,
+      name: batch.name(),
+      gasPrice: batch.gasPrice(),
+    }));
+    const selected = selectedId();
+    // Removal updates selection and the list separately; save only a consistent snapshot.
+    if (!stations.some((station) => station.id === selected)) return;
+    try {
+      Reports.saveStations({ stations, selectedId: selected });
+      stationStorageError.set("");
+    } catch (e) {
+      stationStorageError.set(`加油站更改未保存：${String(e)}`);
+    }
+  });
   const current = () => batches().find((b) => b.id === selectedId()) || batches()[0];
   // These bindings are for synchronous view code only. Async operations capture a Batch.
   function field<T>(read: (batch: Batch) => Signal<T>): Signal<T> {
@@ -134,16 +175,13 @@ export function Workstation(
   }
   async function closeBatch(batch: Batch) {
     if (batch.busy() || downloading()) return;
-    const hasContents =
-      Object.values(batch.files()).some((paths) => paths.length) ||
-      Object.keys(batch.results()).length > 0;
-    if (hasContents) {
+    {
       const choice = await AlertDialog.show({
-        title: "关闭加油站",
-        description: `关闭「${batch.name()}」并清理该加油站的文件选择和结果？原始文件会保留。`,
+        title: "移除加油站",
+        description: `从固定列表移除「${batch.name()}」，并清理该站本次选择的文件和结果？原始文件会保留。`,
         actions: [
           { label: "取消", role: "cancel", id: "cancel" },
-          { label: "关闭加油站", role: "destructive", id: "close" },
+          { label: "移除加油站", role: "destructive", id: "close" },
         ],
       });
       if (choice !== "close") return;
@@ -830,7 +868,7 @@ export function Workstation(
                   </NativeButton>
                   <NativeButton
                     testID={`close-batch-${batch().number}`}
-                    accessibilityLabel={`关闭${batch().name() || `加油站 ${batch().number}`}`}
+                    accessibilityLabel={`移除${batch().name() || `加油站 ${batch().number}`}`}
                     disabled={batch().busy() || downloading()}
                     onPress={() => closeBatch(batch())}
                     style={{
@@ -856,6 +894,9 @@ export function Workstation(
           </Button>
         </View>
         <Scroll testID="home-scroll" style={{ flex: 1 }} contentStyle={{ padding: 20, gap: 16 }}>
+          <If when={!!stationStorageError()}>
+            <Text style={{ color: palette().error, fontSize: 13 }}>{stationStorageError()}</Text>
+          </If>
           <View style={{ gap: 8 }}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <Label>当前加油站</Label>

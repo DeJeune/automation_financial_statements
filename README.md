@@ -68,3 +68,5 @@ pip install -r requirements.txt
 ## License
 
 [Your License Here]
+
+固定加油站列表会自动保存名称、油价、顺序与当前选择，重启后恢复；每日文件、日期和计算结果不沿用，避免混入上次报表。标签上的 × 用于确认移除站点，“重置当前加油站”仅清理当天任务。

@@ -2,6 +2,7 @@
 mod preview;
 mod recognition;
 mod runtime;
+mod stations;
 mod updater;
 use anyhow::{Context, Result};
 use financial_engine::{Cell, Report, Request, report, workbook};
@@ -479,6 +480,18 @@ impl Reports {
     /// Persist appearance and recognition settings.
     pub fn save_preferences(settings: runtime::Preferences) -> Result<(), String> {
         runtime::save_preferences(settings).map_err(|e| e.to_string())
+    }
+    /// Restore fixed station profiles, without restoring daily work.
+    pub fn stations() -> Result<stations::Stations, String> {
+        runtime::data_dir()
+            .and_then(|root| stations::load(&root))
+            .map_err(|e| e.to_string())
+    }
+    /// Atomically save station names, prices, order and selection.
+    pub fn save_stations(value: stations::Stations) -> Result<(), String> {
+        runtime::data_dir()
+            .and_then(|root| stations::save(&root, &value))
+            .map_err(|e| e.to_string())
     }
     /// Record an application error without provider credentials.
     pub fn log_error(message: String) {

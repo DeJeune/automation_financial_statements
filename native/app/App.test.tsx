@@ -4,7 +4,7 @@ import { readUploadClipboard } from "./clipboard";
 const options = { width: 1200, height: 900, platform: "macos" as const };
 
 test("date-time pickers edit all time parts and cancel without changing the value", async () => {
-  const app = await open("./App.tsx", options);
+  const app = await open("./fixtures/Empty.tsx", options);
   for (const field of ["work-start", "shift-time"]) {
     const initial = String(app.value(`id:${field}`));
     const date = `${initial.slice(0, 8)}01`;
@@ -38,7 +38,7 @@ test("date-time pickers edit all time parts and cancel without changing the valu
 }, 60000);
 
 test("API key visibility toggles without changing the key", async () => {
-  const app = await open("./App.tsx", options);
+  const app = await open("./fixtures/Empty.tsx", options);
   await app.press("设置");
   await app.waitFor("id:api-key");
   await app.clear("id:api-key");
@@ -52,7 +52,7 @@ test("API key visibility toggles without changing the key", async () => {
 });
 
 test("original date, time and price controls are present before uploading", async () => {
-  const app = await open("./App.tsx", options);
+  const app = await open("./fixtures/Empty.tsx", options);
   expect(app.value("id:date")).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   expect(app.value("id:work-start")).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
   expect(app.value("id:shift-time")).toMatch(/^\d{4}-\d{2}-\d{2} /);
@@ -304,18 +304,20 @@ test("late pasted files and failed jobs stay with their original batch", async (
   await app.press("id:batch-2");
   await app.waitFor("text:/缺少源表/");
   expect(app.enabled("id:calculate")).toBe(true);
-  app.onDialog(() => "关闭加油站");
+  app.onDialog(() => "移除加油站");
+  app.onDialog(() => "移除加油站");
   await app.press("id:close-batch-2");
   await app.press("id:batch-1");
   expect(app.enabled("导出简表")).toBe(true);
 }, 60000);
 
-test("empty batch tabs close directly, preserve the selected tab and keep a fresh last batch", async () => {
-  const app = await open("./App.tsx", options);
+test("removing stations requires confirmation, preserves selection and keeps a fresh last station", async () => {
+  const app = await open("./fixtures/Empty.tsx", options);
   await app.press("id:new-batch");
   await app.press("id:new-batch");
   await app.clear("id:gas-price");
   await app.type("id:gas-price", "9.21");
+  app.onDialog(() => "移除加油站");
   await app.press("id:close-batch-2");
   expect(app.shows("id:batch-2")).toBe(false);
   expect(app.value("id:gas-price")).toBe("9.21");
@@ -326,7 +328,7 @@ test("empty batch tabs close directly, preserve the selected tab and keep a fres
   expect(app.shows("id:batch-1")).toBe(false);
   expect(app.shows("id:batch-4")).toBe(true);
   expect(app.enabled("id:calculate")).toBe(true);
-  expect(app.dialogs().length).toBe(0);
+  expect(app.dialogs().length).toBe(3);
 });
 
 test("closing a new tab does not stop a running batch, and closing its results requires confirmation", async () => {
@@ -334,6 +336,7 @@ test("closing a new tab does not stop a running batch, and closing its results r
   await app.press("id:calculate");
   expect(app.enabled("id:close-batch-1")).toBe(false);
   await app.press("id:new-batch");
+  app.onDialog(() => "移除加油站");
   await app.press("id:close-batch-2");
   expect(app.shows("id:batch-2")).toBe(false);
   await app.press("id:release-job");
@@ -343,8 +346,44 @@ test("closing a new tab does not stop a running batch, and closing its results r
   await app.press("id:close-batch-1");
   expect(app.shows("id:batch-1")).toBe(true);
   expect(app.value("id:batch-name")).toBe("加油站 3");
-  app.onDialog(() => "关闭加油站");
+  app.onDialog(() => "移除加油站");
   await app.press("id:close-batch-1");
   expect(app.shows("id:batch-1")).toBe(false);
   expect(app.value("id:batch-name")).toBe("加油站 3");
+}, 60000);
+
+test("fixed stations persist names, prices, selection and removal without yesterday's files or results", async () => {
+  const first = await open("./fixtures/Stations.tsx", options);
+  await first.clear("id:batch-name");
+  await first.type("id:batch-name", "城东站");
+  await first.clear("id:gas-price");
+  await first.type("id:gas-price", "8.51");
+  await first.clear("id:date");
+  await first.type("id:date", "2001-01-01");
+  await first.press("id:calculate");
+  await first.waitFor("text:城东站 · 可导出", { timeout: 15000 });
+  await first.press("id:new-batch");
+  await first.clear("id:batch-name");
+  await first.type("id:batch-name", "城西站");
+  await first.clear("id:gas-price");
+  await first.type("id:gas-price", "9.12");
+
+  const reopened = await open("./App.tsx", options);
+  expect(reopened.value("id:batch-name")).toBe("城西站");
+  expect(reopened.value("id:gas-price")).toBe("9.12");
+  await reopened.press("id:batch-1");
+  expect(reopened.value("id:batch-name")).toBe("城东站");
+  expect(reopened.value("id:gas-price")).toBe("8.51");
+  expect(reopened.value("id:date")).not.toBe("2001-01-01");
+  expect(reopened.shows("text:stats.csv")).toBe(false);
+  expect(reopened.shows("text:城东站 · 可导出")).toBe(false);
+  reopened.onDialog(() => "取消");
+  await reopened.press("id:close-batch-2");
+  expect(reopened.shows("id:batch-2")).toBe(true);
+  reopened.onDialog(() => "移除加油站");
+  await reopened.press("id:close-batch-2");
+  const last = await open("./App.tsx", options);
+  expect(last.shows("id:batch-2")).toBe(false);
+  expect(last.value("id:batch-name")).toBe("城东站");
+  expect(last.value("id:gas-price")).toBe("8.51");
 }, 60000);

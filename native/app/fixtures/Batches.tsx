@@ -43,6 +43,7 @@ mount(() => (
       </Button>
     </View>
     <Workstation
+      persistStations={false}
       initialFiles={files}
       clipboard={{
         readFiles: async () => {
