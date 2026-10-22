@@ -1,0 +1,23 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.6.2/schema.json",
+  "files": {
+    "includes": [
+      "native/app/**/*.tsx",
+      "native/app/**/*.ts",
+      "native/app/nsh.json",
+      "native/app/tsconfig.json",
+      "biome.jsonc",
+      "!!**/.nsh",
+      "!!**/target",
+      "!!**/.vendor"
+    ]
+  },
+  "formatter": { "indentStyle": "space", "indentWidth": 2, "lineWidth": 100 },
+  // NSH compiles JSX to native views; React hook/key rules do not apply.
+  "javascript": { "jsxRuntime": "transparent" },
+  "linter": {
+    "enabled": true,
+    "domains": { "react": "none" },
+    "rules": { "preset": "recommended" }
+  }
+}

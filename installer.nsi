@@ -1,3 +1,8 @@
+; The original Nuitka distribution remains supported until native acceptance.
+!ifndef DIST_DIR
+!define DIST_DIR "main.dist"
+!endif
+
 ; 基本设置
 !define PRODUCT_NAME "Financial Automation"
 !define PRODUCT_PUBLISHER "JeuneAstre"
@@ -43,7 +48,7 @@ Section "MainSection" SEC01
     SetOutPath "$INSTDIR"
     SetOverwrite ifnewer
     
-    File /r "main.dist\*.*"
+    File /r "${DIST_DIR}\*.*"
     
     CreateDirectory "$SMPROGRAMS\Financial Automation"
     CreateShortCut "$SMPROGRAMS\Financial Automation\Financial Automation.lnk" "$INSTDIR\FinancialAutomation.exe"

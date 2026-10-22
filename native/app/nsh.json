@@ -1,0 +1,7 @@
+{
+  "name": "Financial Automation",
+  "id": "com.jeuneastre.financial-automation",
+  "version": "2.0.0",
+  "rust": "bridge",
+  "appearance": "light"
+}

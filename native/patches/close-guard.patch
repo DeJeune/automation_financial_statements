@@ -1,0 +1,49 @@
+--- a/crates/nsh-core/src/ui/desktop.rs
++++ b/crates/nsh-core/src/ui/desktop.rs
+@@ -41,3 +41,15 @@
+ pub fn close_window() {
+     super::ambient::desktop_command(DesktopCommand::Close);
+ }
++
++/// Block user-initiated close/quit during a financial write or recognition task.
++/// Application-specific extension; the application has one desktop window.
++static CLOSE_BLOCKED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
++/// Enable or disable the application close guard.
++pub fn set_close_blocked(blocked: bool) {
++    CLOSE_BLOCKED.store(blocked, std::sync::atomic::Ordering::SeqCst);
++}
++/// Whether an in-flight application operation blocks close.
++pub fn close_blocked() -> bool {
++    CLOSE_BLOCKED.load(std::sync::atomic::Ordering::SeqCst)
++}
+--- a/crates/nsh-platform-macos/src/app.rs
++++ b/crates/nsh-platform-macos/src/app.rs
+@@ -390,5 +390,8 @@
+         #[unsafe(method(applicationShouldTerminate:))]
+         fn should_terminate(&self, app: &NSApplication) -> NSApplicationTerminateReply {
++            if nsh_core::ui::desktop::close_blocked() {
++                return NSApplicationTerminateReply::TerminateCancel;
++            }
+             finish_running(app);
+             // The caller owns process termination after run_app returns.
+             NSApplicationTerminateReply::TerminateCancel
+@@ -420,6 +423,7 @@
+     unsafe impl NSWindowDelegate for Delegate {
+         #[unsafe(method(windowShouldClose:))]
+         fn should_close(&self, window: &NSWindow) -> bool {
++            if nsh_core::ui::desktop::close_blocked() { return false.into(); }
+             let keep_alive = RUNNING.with(|running| {
+                 running
+                     .borrow()
+--- a/crates/nsh-platform-windows/src/window.rs
++++ b/crates/nsh-platform-windows/src/window.rs
+@@ -478,6 +478,9 @@
+     {
+         return result;
+     }
++    if msg == WM_CLOSE && data.top_level && nsh_core::ui::desktop::close_blocked() {
++        return LRESULT(0);
++    }
+     if msg == WM_DESTROY && data.top_level {
+         let left = OPEN.with(|o| {
+             o.set(o.get().saturating_sub(1));

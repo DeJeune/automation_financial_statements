@@ -1,5 +1,6 @@
 .venv/
 .pytest_cache
+# macOS metadata (all directories)
 .DS_Store
 images
 tables
@@ -47,3 +48,15 @@ build/
 htmlcov/
 
 /uv.lock
+# Native application
+/native/target/
+/native/.nsh/
+/native/.vendor/
+/native/app/.nsh/
+!/native/app/nsh.json
+!/native/app/tsconfig.json
+/native/app/target/
+/native/package/
+!/native/app/fixtures/*.csv
+!/native/app/fixtures/*.xlsx
+/native/.tools/

@@ -1,0 +1,77 @@
+name: Native desktop
+on:
+  pull_request:
+    paths: ['native/**', 'scripts/*native*', 'scripts/biome.*', 'biome.jsonc', 'installer.nsi', '.github/workflows/native.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      RUSTUP_TOOLCHAIN: stable
+      FINANCIAL_DISABLE_UPDATE_CHECK: "1"
+      FINANCIAL_DATA_DIR: ${{ github.workspace }}/native/target/test-data
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            native
+            native/app
+            native/.vendor/nsh
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+      - name: Prepare pinned NSH (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/bootstrap-native.ps1
+      - name: Prepare pinned NSH (macOS)
+        if: runner.os != 'Windows'
+        run: ./scripts/bootstrap-native.sh
+      - name: Lint, format and types (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/check-native.ps1
+      - name: Lint, format and types (macOS)
+        if: runner.os != 'Windows'
+        run: ./scripts/check-native.sh
+      - name: Rust regression tests
+        run: cargo test --locked --manifest-path native/Cargo.toml -p financial-engine -p financial-desktop
+      - name: UI tests (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & native/.vendor/nsh/target/debug/nsh.exe test native/app/App.test.tsx
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: UI tests (macOS)
+        if: runner.os != 'Windows'
+        run: native/.vendor/nsh/target/debug/nsh test native/app/App.test.tsx
+      - name: Package Windows application
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & native/.vendor/nsh/target/debug/nsh.exe package native/app/App.tsx --target windows --name FinancialAutomation -o native/package
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          choco install nsis -y
+          & 'C:\Program Files (x86)\NSIS\makensis.exe' /DPRODUCT_VERSION=2.0.0 /DDIST_DIR=native\package\FinancialAutomation installer.nsi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Package macOS application
+        if: runner.os != 'Windows'
+        run: |
+          native/.vendor/nsh/target/debug/nsh package native/app/App.tsx --target macos --name FinancialAutomation -o native/package
+          ditto -c -k --sequesterRsrc --keepParent native/package/FinancialAutomation.app native/package/FinancialAutomation-macOS.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FinancialAutomation-${{ runner.os }}
+          path: |
+            native/package/*.zip
+            Financial_Automation_Setup_*.exe
+          if-no-files-found: error
