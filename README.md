@@ -28,7 +28,7 @@ FINANCIAL_DISABLE_UPDATE_CHECK=1 FINANCIAL_DATA_DIR="$PWD/native/target/test-dat
 native/.vendor/nsh/target/debug/nsh package native/app/App.tsx --target macos --name FinancialAutomation -o native/package
 ```
 
-Windows 在 PowerShell 执行 `./scripts/bootstrap-native.ps1`，随后使用 `native/.vendor/nsh/target/debug/nsh.exe`；打包参数改为 `--target windows`。需要 Visual Studio C++ Build Tools、Windows SDK 和 LLVM。`.github/workflows/native.yml` 提供两平台构建及安装包产物；现有 Python 发布流水线暂时保留，不会因本次本地修改自动发布新版。
+Windows 在 PowerShell 执行 `./scripts/bootstrap-native.ps1`，随后使用 `native/.vendor/nsh/target/debug/nsh.exe`；打包参数改为 `--target windows`。需要 Visual Studio C++ Build Tools、Windows SDK 和 LLVM。`.github/workflows/native.yml` 提供两平台的检查、测试和原生安装包，并供 `release.yml` 复用。合并 PR 不发布；推送 `vX.Y.Z` 标签后，只有 Windows 与 macOS 全部检查及打包成功，才发布 Windows 安装程序和 macOS 应用 ZIP，不再执行 Python / Nuitka 打包。发布前须将 `native/app/nsh.json`、两个原生 crate 的 `Cargo.toml` 及 `native/Cargo.lock` 版本同步更新；标签必须与原生版本一致（当前为 `v2.0.0`），否则在构建前失败。
 
 界面保留完整日期、上班/交班时间、油价、日报与简表独立模板、多张平台截图、文件预览、日志和分别导出。 点击“添加加油站”可在当前加油站后台处理时，继续上传另一日期或加油站的文件；各加油站标签支持命名、切换、排队、取消排队和独立重置，已完成结果分别导出，标签上的 × 用于关闭。后台任务按队列顺序执行，延续现有截图识别限流；状态仅保存在本次应用会话中。配置支持原有 `GEMINI_API_KEY`、`GEMINI_BASE_URL`、`GEMINI_MODEL` 环境变量及 `.env`，也可以在设置页保存。默认油价为 8.23，国通为可选。日志和设置保存在系统用户数据目录的 `Financial Automation` 下；清除日志按钮仅清空当前显示。
 

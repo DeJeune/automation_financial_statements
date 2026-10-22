@@ -6,81 +6,42 @@ on:
       - v*.*.*
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  release:
-    runs-on: ${{ matrix.os }}
+  build:
+    uses: ./.github/workflows/native.yml
+    with:
+      release_tag: ${{ github.ref_name }}
 
-    strategy:
-      matrix:
-        os: [windows-latest]
-        python-version: ['3.13']
-      fail-fast: false
-    
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - name: Check out Git repository  
-        uses: actions/checkout@v4
-      
-      - name: Get release tag
-        id: get-tag
-        shell: bash
-        run: |
-          echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
-      
-      - name: Set up C compiler
-        if: matrix.os == 'windows-latest'
-        uses: ilammy/msvc-dev-cmd@v1
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v5
+      - name: Download both native packages
+        uses: actions/download-artifact@v4
         with:
-          version: '0.5.31'
-          python-version: ${{ matrix.python-version }}
-
-      - name: Set up Python ${{ matrix.python-version }}
-        run: uv python install
-
-      - name: Install dependencies
-        run: uv sync --all-extras --dev
-      
-      - name: Install NSIS
+          pattern: FinancialAutomation-*
+          merge-multiple: true
+          path: release-assets
+      - name: Verify release assets
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          choco install nsis -y
-          echo "C:\Program Files (x86)\NSIS" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-      
-      - name: Write version file
-        shell: bash
-        run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
-          echo "__version__ = \"$VERSION\"" > src/_version.py
-
-      - name: Build Windows executable
-        run: |
-          $ErrorActionPreference = "Stop"
-          nuitka --standalone `
-            --assume-yes-for-downloads `
-            --windows-console-mode=disable `
-            --enable-plugin=pyside6 `
-            --include-data-dir=assets=assets `
-            --windows-icon-from-ico=assets/app.ico `
-            --output-filename=FinancialAutomation main.py
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (-not (Test-Path "main.dist\FinancialAutomation.exe")) {
-            Write-Error "Build output not found at main.dist\FinancialAutomation.exe"
-            exit 1
-          }
-
-      - name: Build installer
-        run: makensis /DPRODUCT_VERSION=${{ steps.get-tag.outputs.tag }} installer.nsi
-      
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: Financial_Automation_Setup_${{ steps.get-tag.outputs.tag }}.exe
-          path: Financial_Automation_Setup_${{ steps.get-tag.outputs.tag }}.exe
-      - name: Upload release
+          test -s "release-assets/Financial_Automation_Setup_${RELEASE_TAG#v}.exe"
+          test -s release-assets/FinancialAutomation-macOS.zip
+      - name: Publish native release
         uses: softprops/action-gh-release@v2
         with:
-          files: Financial_Automation_Setup_${{ steps.get-tag.outputs.tag }}.exe
-
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            release-assets/Financial_Automation_Setup_*.exe
+            release-assets/FinancialAutomation-macOS.zip
