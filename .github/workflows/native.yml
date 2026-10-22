@@ -49,19 +49,28 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+      # Restore caches only after all path dependencies exist. Cache setup may
+      # create target directories, which bootstrap correctly rejects as an
+      # unverified checkout when no revision marker is present.
+      - name: Prepare pinned NSH sources (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/bootstrap-native.ps1 -PrepareOnly
+      - name: Prepare pinned NSH sources (macOS)
+        if: runner.os != 'Windows'
+        run: ./scripts/bootstrap-native.sh --prepare-only
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: |
             native
-            native/app
             native/.vendor/nsh
       - uses: ilammy/msvc-dev-cmd@v1
         if: runner.os == 'Windows'
-      - name: Prepare pinned NSH (Windows)
+      - name: Build pinned NSH (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/bootstrap-native.ps1
-      - name: Prepare pinned NSH (macOS)
+      - name: Build pinned NSH (macOS)
         if: runner.os != 'Windows'
         run: ./scripts/bootstrap-native.sh
       - name: Lint, format and types (Windows)

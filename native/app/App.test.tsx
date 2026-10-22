@@ -1,3 +1,4 @@
+import { Reports } from "financial/native";
 import { expect, open, test } from "nsh/test";
 import { readUploadClipboard } from "./clipboard";
 
@@ -305,8 +306,8 @@ test("late pasted files and failed jobs stay with their original batch", async (
   await app.waitFor("text:/缺少源表/");
   expect(app.enabled("id:calculate")).toBe(true);
   app.onDialog(() => "移除加油站");
-  app.onDialog(() => "移除加油站");
   await app.press("id:close-batch-2");
+  await app.waitFor("id:batch-2", { state: "gone" });
   await app.press("id:batch-1");
   expect(app.enabled("导出简表")).toBe(true);
 }, 60000);
@@ -319,12 +320,15 @@ test("removing stations requires confirmation, preserves selection and keeps a f
   await app.type("id:gas-price", "9.21");
   app.onDialog(() => "移除加油站");
   await app.press("id:close-batch-2");
+  await app.waitFor("id:batch-2", { state: "gone" });
   expect(app.shows("id:batch-2")).toBe(false);
   expect(app.value("id:gas-price")).toBe("9.21");
   await app.press("id:close-batch-3");
+  await app.waitFor("id:batch-3", { state: "gone" });
   expect(app.shows("id:batch-3")).toBe(false);
   expect(app.value("id:gas-price")).toBe("8.23");
   await app.press("id:close-batch-1");
+  await app.waitFor("id:batch-1", { state: "gone" });
   expect(app.shows("id:batch-1")).toBe(false);
   expect(app.shows("id:batch-4")).toBe(true);
   expect(app.enabled("id:calculate")).toBe(true);
@@ -338,6 +342,7 @@ test("closing a new tab does not stop a running batch, and closing its results r
   await app.press("id:new-batch");
   app.onDialog(() => "移除加油站");
   await app.press("id:close-batch-2");
+  await app.waitFor("id:batch-2", { state: "gone" });
   expect(app.shows("id:batch-2")).toBe(false);
   await app.press("id:release-job");
   await app.waitFor("text:加油站 1 · 可导出", { timeout: 15000 });
@@ -348,6 +353,7 @@ test("closing a new tab does not stop a running batch, and closing its results r
   expect(app.value("id:batch-name")).toBe("加油站 3");
   app.onDialog(() => "移除加油站");
   await app.press("id:close-batch-1");
+  await app.waitFor("id:batch-1", { state: "gone" });
   expect(app.shows("id:batch-1")).toBe(false);
   expect(app.value("id:batch-name")).toBe("加油站 3");
 }, 60000);
@@ -367,8 +373,16 @@ test("fixed stations persist names, prices, selection and removal without yester
   await first.type("id:batch-name", "城西站");
   await first.clear("id:gas-price");
   await first.type("id:gas-price", "9.12");
+  // Input events and the persistence effect can finish after the driver step.
+  // Verify the on-disk snapshot before opening a second application instance.
+  await first.waitUntil(() => {
+    const saved = Reports.stations();
+    const selected = saved.stations.find((station) => station.id === saved.selectedId);
+    return selected?.name === "城西站" && selected.gasPrice === "9.12";
+  });
 
   const reopened = await open("./App.tsx", options);
+  await reopened.waitUntil(() => reopened.value("id:batch-name") === "城西站");
   expect(reopened.value("id:batch-name")).toBe("城西站");
   expect(reopened.value("id:gas-price")).toBe("9.12");
   await reopened.press("id:batch-1");
@@ -382,6 +396,10 @@ test("fixed stations persist names, prices, selection and removal without yester
   expect(reopened.shows("id:batch-2")).toBe(true);
   reopened.onDialog(() => "移除加油站");
   await reopened.press("id:close-batch-2");
+  await reopened.waitFor("id:batch-2", { state: "gone" });
+  await reopened.waitUntil(
+    () => !Reports.stations().stations.some((station) => station.number === 2),
+  );
   const last = await open("./App.tsx", options);
   expect(last.shows("id:batch-2")).toBe(false);
   expect(last.value("id:batch-name")).toBe("城东站");

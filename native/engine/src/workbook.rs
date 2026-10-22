@@ -22,7 +22,9 @@ fn children<'a>(n: Node<'a, 'a>, name: &'a str) -> impl Iterator<Item = Node<'a,
         .filter(move |v| v.is_element() && v.tag_name().name() == name)
 }
 fn replace(text: &str, mut edits: Vec<(Range<usize>, String)>) -> Result<String> {
-    edits.sort_by_key(|e| e.0.start);
+    // At a shared boundary, apply the replacement before inserting ahead of it.
+    // Edits are applied in reverse, so zero-length insertions must sort first.
+    edits.sort_by_key(|e| (e.0.start, e.0.end));
     for pair in edits.windows(2) {
         ensure!(pair[0].0.end <= pair[1].0.start, "重叠的工作簿修改");
     }

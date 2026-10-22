@@ -87,15 +87,15 @@ fn reject_duplicate_headers() {
     assert!(source::read(&p, &["油品", "优惠"], &["优惠"], true).is_err());
 }
 #[test]
+#[ignore = "requires private .context/attachments samples"]
 fn verified_oct20_values_and_output_preservation() {
     let base = source_dir();
     let template = base.join("0LPzc8/T-CD简20(1).xlsx");
-    if !template.exists() {
-        eprintln!(
-            "private sample absent; run scripts/verify-native.py in the attachment workspace"
-        );
-        return;
-    }
+    assert!(
+        template.exists(),
+        "missing private sample: {}",
+        template.display()
+    );
     let mut req = request(&base);
     req.sources = BTreeMap::from([
         ("油品时间统计".into(), base.join("H08NC1/1(5).xlsx")),
@@ -163,6 +163,12 @@ fn preserved(a: &Path, b: &Path, changed: &[&str]) {
     }
 }
 fn minimal(path: &Path) {
+    minimal_with_sheet(
+        path,
+        r#"<worksheet><sheetData><row r="1"><c r="A1" s="0"><v>7</v></c></row><row r="2"/></sheetData><mergeCells><mergeCell ref="A1:B1"/></mergeCells></worksheet>"#,
+    );
+}
+fn minimal_with_sheet(path: &Path, sheet: &str) {
     let mut zip = ZipWriter::new(File::create(path).unwrap());
     let parts = [
         (
@@ -177,10 +183,7 @@ fn minimal(path: &Path) {
             "xl/styles.xml",
             r#"<styleSheet><cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellXfs></styleSheet>"#,
         ),
-        (
-            "xl/worksheets/sheet1.xml",
-            r#"<worksheet><sheetData><row r="1"><c r="A1" s="0"><v>7</v></c></row><row r="2"/></sheetData><mergeCells><mergeCell ref="A1:B1"/></mergeCells></worksheet>"#,
-        ),
+        ("xl/worksheets/sheet1.xml", sheet),
         (
             "xl/media/image1.png",
             "this opaque fixture must survive byte-for-byte",
@@ -192,6 +195,55 @@ fn minimal(path: &Path) {
         zip.write_all(value.as_bytes()).unwrap();
     }
     zip.finish().unwrap();
+}
+#[test]
+fn sparse_rows_insert_before_updated_cells_and_preserve_styles() {
+    let dir = tempfile::tempdir().unwrap();
+    for (inserted, existing, row) in [("A3", "B3", 3), ("G2", "J2", 2)] {
+        let template = dir.path().join(format!("template-{row}.xlsx"));
+        minimal_with_sheet(
+            &template,
+            &format!(
+                r#"<worksheet><sheetData><row r="{row}"><c r="{existing}" s="0"><v>7</v></c></row></sheetData></worksheet>"#
+            ),
+        );
+        let update = SheetUpdate {
+            cells: BTreeMap::from([
+                (inserted.into(), Cell::Number("10".into())),
+                (existing.into(), Cell::Number("20".into())),
+            ]),
+            formats: BTreeMap::from([(inserted.into(), 2)]),
+        };
+        let updates = Updates::from([("Sheet1".into(), update)]);
+        let output = dir.path().join(format!("output-{row}.xlsx"));
+        workbook::write(&template, &output, &updates).unwrap();
+        preserved(
+            &template,
+            &output,
+            &[
+                "xl/worksheets/sheet1.xml",
+                "xl/styles.xml",
+                "xl/workbook.xml",
+            ],
+        );
+        let mut zip = ZipArchive::new(File::open(&output).unwrap()).unwrap();
+        let mut sheet = String::new();
+        zip.by_name("xl/worksheets/sheet1.xml")
+            .unwrap()
+            .read_to_string(&mut sheet)
+            .unwrap();
+        let doc = roxmltree::Document::parse(&sheet).unwrap();
+        let cells: Vec<_> = doc.descendants().filter(|n| n.has_tag_name("c")).collect();
+        assert_eq!(cells.len(), 2);
+        for (cell, address, value, style) in [
+            (cells[0], inserted, "10", "1"),
+            (cells[1], existing, "20", "0"),
+        ] {
+            assert_eq!(cell.attribute("r"), Some(address));
+            assert_eq!(cell.attribute("s"), Some(style));
+            assert_eq!(cell.first_element_child().unwrap().text(), Some(value));
+        }
+    }
 }
 #[test]
 fn patch_preserves_media_and_rejects_merged_children_atomically() {
@@ -229,11 +281,10 @@ fn patch_preserves_media_and_rejects_merged_children_atomically() {
     assert!(workbook::write(&template, &template, &updates).is_err());
 }
 #[test]
+#[ignore = "requires private .context/attachments samples"]
 fn reads_real_grouped_xls() {
     let p = source_dir().join("ZRUN60/2(1).xls");
-    if !p.exists() {
-        return;
-    }
+    assert!(p.exists(), "missing private sample: {}", p.display());
     let rows = source::read(&p, &["油品", "优惠"], &["优惠"], true).unwrap();
     assert!(!rows.rows.is_empty());
     assert!(
@@ -264,12 +315,11 @@ fn recognition_requires_numbers_instead_of_silent_zero() {
 }
 
 #[test]
+#[ignore = "requires private .context/attachments samples"]
 fn real_embedded_screenshots_survive_a_template_edit() {
     for relative in ["a8JA1z/1(3).xlsx", "But3s4/4(3).xlsx"] {
         let path = source_dir().join(relative);
-        if !path.exists() {
-            continue;
-        }
+        assert!(path.exists(), "missing private sample: {}", path.display());
         let book = calamine::open_workbook_auto(&path).unwrap();
         let name = book.sheet_names()[0].clone();
         let out = tempfile::tempdir().unwrap();

@@ -1,5 +1,11 @@
 #!/bin/sh
 set -eu
+case "${1:-}" in
+  '') prepare_only=false ;;
+  --prepare-only) prepare_only=true ;;
+  *) echo 'Usage: bootstrap-native.sh [--prepare-only]' >&2; exit 2 ;;
+esac
+[ "$#" -le 1 ] || { echo 'Usage: bootstrap-native.sh [--prepare-only]' >&2; exit 2; }
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 revision=caaa58ccdcb2529c710219fdd52576bbda84b022
 checksum=120afd561a98d8982af7df0146c1981b3082bb9b77eba1cc8c15a85cb8f2da60
@@ -23,5 +29,6 @@ fi
 patchfile="$root/native/patches/close-guard.patch"
 if git -C "$vendor/nsh" apply --reverse --check "$patchfile" 2>/dev/null; then :
 else git -C "$vendor/nsh" apply --check "$patchfile"; git -C "$vendor/nsh" apply "$patchfile"; fi
+if "$prepare_only"; then exit 0; fi
 RUSTUP_TOOLCHAIN=stable cargo build --locked --manifest-path "$vendor/nsh/Cargo.toml" -p nsh-cli
 printf 'NSH ready: %s\n' "$vendor/nsh/target/debug/nsh"

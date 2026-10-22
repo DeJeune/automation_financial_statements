@@ -1,3 +1,5 @@
+param([switch]$PrepareOnly)
+
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path $PSScriptRoot -Parent
 $Revision = 'caaa58ccdcb2529c710219fdd52576bbda84b022'
@@ -25,6 +27,7 @@ if ($LASTEXITCODE -ne 0) {
     git -C $Vendor apply $Patch
     if ($LASTEXITCODE -ne 0) { throw 'NSH close guard patch failed' }
 }
+if ($PrepareOnly) { return }
 $env:RUSTUP_TOOLCHAIN = 'stable'
 cargo build --locked --manifest-path (Join-Path $Vendor 'Cargo.toml') -p nsh-cli
 if ($LASTEXITCODE -ne 0) { throw 'NSH CLI build failed' }
