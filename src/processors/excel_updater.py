@@ -1,6 +1,8 @@
 from typing import Dict, Any, List, cast
 from threading import RLock
 import openpyxl
+from openpyxl.cell.cell import MergedCell
+from openpyxl.utils.cell import coordinate_to_tuple
 from src.utils.logger import logger
 from pathlib import Path
 
@@ -52,6 +54,8 @@ class ExcelUpdater:
         """
         try:
             with ExcelUpdater._global_lock:
+                if self.workbook.calculation is not None:
+                    self.workbook.calculation.fullCalcOnLoad = True
                 self.workbook.save(self.output_path)
                 logger.info(
                     f"Successfully saved workbook to: {self.output_path}")
@@ -92,6 +96,20 @@ class ExcelUpdater:
             raise ValueError(
                 f"Sheet '{update['sheet']}' not found in workbook")
 
+        if 'cells' in update:
+            if not isinstance(update['cells'], dict) or not update['cells']:
+                raise ValueError('Cell updates must be a non-empty mapping')
+            formats = update.get('number_formats', {})
+            if not isinstance(formats, dict) or not all(isinstance(v, str) for v in formats.values()):
+                raise ValueError('Number formats must be a mapping of cell addresses to format strings')
+            for address in update['cells'].keys() | formats.keys():
+                row, column = coordinate_to_tuple(address)
+                if not (1 <= row <= 1048576 and 1 <= column <= 16384):
+                    raise ValueError(f'Invalid cell address: {address}')
+                if isinstance(self.workbook[update['sheet']][address], MergedCell):
+                    raise ValueError(f'Cannot write merged cell: {address}')
+            return
+
         if update['sheet'] in ('调价前', '调价后'):
             if 'product_name' in update:
                 if not all(key in update for key in ['column', 'value']):
@@ -128,6 +146,9 @@ class ExcelUpdater:
         """
         try:
             with ExcelUpdater._global_lock:
+                # Validate the complete batch before mutating any cell.
+                for update in updates:
+                    self._validate_update(update)
                 # Track accumulated cell values for same-cell updates
                 accumulated_values = {}
 
@@ -137,6 +158,13 @@ class ExcelUpdater:
 
                     sheet_name = update['sheet']
                     sheet = self.workbook[sheet_name]
+
+                    if 'cells' in update:
+                        for address, value in update['cells'].items():
+                            sheet[address] = value
+                        for address, number_format in update.get('number_formats', {}).items():
+                            sheet[address].number_format = number_format
+                        continue
 
                     if sheet_name in ('调价前', '调价后'):
                         if 'section' in update:

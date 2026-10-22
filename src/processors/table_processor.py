@@ -3,6 +3,7 @@ from pathlib import Path
 import pandas as pd
 from src.utils.logger import logger
 from src.config.shift_config import ShiftConfig
+from src.processors.source_tables import numeric, read_discounts, read_source
 
 
 class TableProcessor:
@@ -107,10 +108,7 @@ class TableProcessor:
     async def _process_discounts(self, path: Path) -> Dict[str, Any]:
         """Process 油品优惠 table"""
         try:
-            df = pd.read_excel(
-                path,
-                usecols=['油品', '优惠'],  # Only read product and discount columns
-            )
+            df = read_discounts(path)
 
             # Initialize discount sums
             gasoline_discount = 0.0  # 汽油优惠总和 (92#和95#)
@@ -155,11 +153,7 @@ class TableProcessor:
 
     async def _process_refuel_details(self, path: Path) -> Dict[str, Any]:
         """Process 加油明细 table"""
-        df = pd.read_excel(
-            path,
-            skiprows=2,  # 跳过前两行
-            usecols=['结算金额', '收款方式']
-        )
+        df = numeric(read_source(path, ['结算金额', '收款方式']), ['结算金额'])
 
         customer_discount = df[df['收款方式'] == '充值卡收款']['结算金额'].sum()
         electric_discount = df[df['收款方式'] == '电子卡收款']['结算金额'].sum()
@@ -187,7 +181,7 @@ class TableProcessor:
     async def _process_tonglian(self, path: Path) -> Dict[str, Any]:
         """Process 通联 table"""
         # 实现具体的处理逻辑
-        df = pd.read_excel(path, skiprows=1, usecols=['原始金额', '收支方向'])
+        df = numeric(read_source(path, ['原始金额', '收支方向']), ['原始金额'])
         income = df[df['收支方向'] == '收入']['原始金额'].sum()
 
         p = {
@@ -209,11 +203,12 @@ class TableProcessor:
     async def _process_recharge_details(self, path: Path) -> Dict[str, Any]:
         """Process 充值明细表格"""
         try:
-            df = pd.read_excel(path, skiprows=2, usecols=['充值金额', '充值赠送', '付款方式'])
+            df = read_source(path, ['充值金额', '充值赠送', '付款方式'])
 
             # 将充值金额和充值赠送的 NaN 值填充为 0
             df['充值金额'] = df['充值金额'].fillna(0)
             df['充值赠送'] = df['充值赠送'].fillna(0)
+            df = numeric(df, ['充值金额', '充值赠送'])
 
             # 创建在线支付和现金支付的掩码
             online_mask = (df['付款方式'].str.contains('微信|支付宝', na=False))
@@ -243,4 +238,3 @@ class TableProcessor:
         except Exception as e:
             logger.error(f"处理充值明细表格错误: {str(e)}")
             raise
-

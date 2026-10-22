@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                                QFileDialog, QGroupBox, QLabel, QMessageBox,
                                QHeaderView, QApplication, QScrollArea, QSplitter,
                                QDateEdit, QDateTimeEdit, QDoubleSpinBox, QTabWidget,
-                               QTextEdit, QSizePolicy, QFrame)
+                               QTextEdit, QSizePolicy, QFrame, QLineEdit)
 from PySide6.QtCore import QSize, Qt, Signal, QObject, QThread, QEvent, QDate, QDateTime, QTimer
 from PySide6.QtGui import QColor, QDropEvent, QImage, QKeyEvent, QActionGroup
 from pathlib import Path
@@ -11,6 +11,7 @@ import asyncio
 import shutil
 from typing import Any, Dict, List
 from datetime import date, datetime
+from dataclasses import replace
 import json
 from src.config.shift_config import ShiftConfig
 from src.processors.excel_updater import ExcelUpdater
@@ -22,16 +23,19 @@ from src.gui.components.preview import TablePreviewDialog, ImagePreviewDialog
 from src.utils.theme_manager import ThemeManager
 from typing import cast
 import pandas as pd
+import openpyxl
+from src.processors.simple_report import (
+    SimpleReportProcessor, SIMPLE_CATEGORIES, SIMPLE_REQUIRED_CATEGORIES, is_simple_report,
+)
 import platform
 
-REQUIRED_IMAGE_CATEGORIES = [
-    "国通1", "国通2"
-]
+REQUIRED_IMAGE_CATEGORIES: list[str] = []
 REQUIRED_TABLE_CATEGORIES = [  # 必填表格
     "油品时间统计", "油品优惠", "加油明细", "充值明细"
 ]
 OPTIONAL_TABLE_CATEGORIES = ["油品时间统计(调价后)", "通联"]  # 可选表格
-OPTIONAL_IMAGE_CATEGORIES = ["团油", "货车帮", "滴滴加油", "POS", "超市销售收入", "抖音"]  # 可选图片
+OPTIONAL_IMAGE_CATEGORIES = ["国通1", "国通2", "团油", "货车帮", "滴滴加油", "POS", "超市销售收入", "抖音"]  # 可选图片
+TEMPLATE_LABELS = {'output_table': '日报模板', 'simple_output_table': '简表模板'}
 ALLOWED_IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.tiff', '.bmp'}
 ALLOWED_TABLE_EXTENSIONS = {'.xlsx', '.xls', '.csv'}
 
@@ -71,6 +75,23 @@ class TableProcessingWorker(QThread):
             self.error.emit(str(e), self.category)
         finally:
             loop.close()
+
+
+class SimpleReportWorker(QThread):
+    """Read and reconcile source exports before scheduling any workbook writes."""
+    finished = Signal(dict, str)
+    error = Signal(str, str)
+
+    def __init__(self, processor: SimpleReportProcessor, paths: Dict[str, Path]):
+        super().__init__()
+        self.processor = processor
+        self.paths = paths
+
+    def run(self):
+        try:
+            self.finished.emit(self.processor.build_updates(self.paths), 'simple_output_table')
+        except Exception as error:
+            self.error.emit(str(error), 'simple_output_table')
 
 
 class ProcessingWorker(QThread):
@@ -155,17 +176,21 @@ class ExcelUpdateWorker(QThread):
 
     def run(self):
         """Run the update operation in the worker thread"""
+        updater = None
         try:
             # Initialize ExcelUpdater in the worker thread
-            self.excel_updater = ExcelUpdater(self.output_table_path)
-            self.excel_updater.apply_updates(self.pending_updates)
-            self.excel_updater.save_workbook()
+            updater = ExcelUpdater(self.output_table_path)
+            updater.apply_updates(self.pending_updates)
+            updater.save_workbook()
             logger.info("Successfully applied updates to workbook")
             self.finished.emit(True, "")
         except Exception as e:
             error_msg = str(e)
             logger.error(f"Error applying updates: {error_msg}")
             self.finished.emit(False, error_msg)
+        finally:
+            if updater is not None:
+                updater.close_workbook()
 
 
 class LogViewer(QWidget):
@@ -291,6 +316,12 @@ class MainWindow(QMainWindow):
         self.required_table_rows = {}
         self.optional_table_rows = {}
         self.output_table_path = None
+        self.simple_output_table_path = None
+        self.simple_report = False
+        self.template_rows = {}
+        self.simple_pending_updates = []
+        self.update_workers = {}
+        self.failed_outputs = set()
 
         # Initialize with current date and time
         current_datetime = QDateTime.currentDateTime()
@@ -348,60 +379,32 @@ class MainWindow(QMainWindow):
         upload_layout.setContentsMargins(10, 10, 10, 10)
         upload_layout.setSpacing(10)
 
-        # Output table section
-        output_group = QGroupBox("输出表格")
-        output_group.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)  # 让GroupBox能够水平扩展
-        output_layout = QVBoxLayout()
-        output_layout.setContentsMargins(5, 5, 5, 5)
-        output_layout.setSpacing(5)
-
-        # Create table upload row
-        table_row = QWidget()
-        table_row.setAcceptDrops(True)
-        table_row.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        # Enable copy-paste support by installing event filter and registering the widget
-        table_row.installEventFilter(self)
-
-        row_layout = QHBoxLayout(table_row)
-        row_layout.setContentsMargins(10, 5, 10, 5)
-        row_layout.setSpacing(5)  # 添加组件间距
-
-        # Add row content
-        self.table_status_label = QLabel("拖放表格、点击上传或按Ctrl+V粘贴")
-        self.table_status_label.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)  # 让状态标签能够自适应宽度
-        self.table_status_label.setMinimumWidth(100)  # 减小最小宽度
-
-        upload_table_btn = QPushButton("上传")
-        upload_table_btn.setMinimumWidth(50)  # 减小按钮最小宽度
-        upload_table_btn.setMaximumWidth(80)  # 限制最大宽度
-        upload_table_btn.clicked.connect(
-            lambda checked, c="output_table": self._upload_table_file(c)
-        )
-
-        paste_table_btn = QPushButton("粘贴")
-        paste_table_btn.setMinimumWidth(50)  # 减小按钮最小宽度
-        paste_table_btn.setMaximumWidth(80)  # 限制最大宽度
-        paste_table_btn.clicked.connect(
-            lambda checked, c="output_table": self._handle_clipboard_paste(
-                c)
-        )
-
-        # Set drag-and-drop events
-        table_row.dragEnterEvent = lambda e: e.acceptProposedAction(
-        ) if e.mimeData().hasUrls() else None
-        table_row.dropEvent = lambda e, c="output_table": self._handle_row_drop(
-            e, c)
-
-        # 修改行布局中组件的添加方式
-        row_layout.addWidget(self.table_status_label, 1)  # 状态标签占用剩余空间
-        row_layout.addWidget(paste_table_btn, 0)  # 按钮不拉伸
-        row_layout.addWidget(upload_table_btn, 0)  # 按钮不拉伸
-
-        output_layout.addWidget(table_row)
-        output_group.setLayout(output_layout)
-        upload_layout.addWidget(output_group)
+        # Independent template slots share source uploads, never the output file.
+        for category, title in TEMPLATE_LABELS.items():
+            group = QGroupBox(title)
+            layout = QVBoxLayout(group)
+            row = QWidget()
+            row.setAcceptDrops(True)
+            row.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+            row.installEventFilter(self)
+            row_layout = QHBoxLayout(row)
+            status = QLabel('拖放模板、点击上传或按 Ctrl+V 粘贴')
+            status.setWordWrap(True)
+            row_layout.addWidget(status, 1)
+            for text, callback in [
+                ('粘贴', lambda checked=False, c=category: self._handle_clipboard_paste(c)),
+                ('上传模板', lambda checked=False, c=category: self._upload_table_file(c)),
+                ('清除', lambda checked=False, c=category: self._clear_category(c)),
+            ]:
+                button = QPushButton(text)
+                button.clicked.connect(callback)
+                row_layout.addWidget(button)
+            row.dragEnterEvent = lambda event: event.acceptProposedAction() if event.mimeData().hasUrls() else None
+            row.dropEvent = lambda event, c=category: self._handle_row_drop(event, c)
+            self.template_rows[category] = (row, status)
+            layout.addWidget(row)
+            upload_layout.addWidget(group)
+        self.table_status_label = self.template_rows['output_table'][1]
 
         # Add date and time controls section
         date_time_group = QGroupBox("时间设置")
@@ -466,77 +469,38 @@ class MainWindow(QMainWindow):
         date_time_layout.addLayout(first_row_layout)
         date_time_layout.addLayout(second_row_layout)
 
+        self.simple_options = QWidget()
+        simple_layout = QHBoxLayout(self.simple_options)
+        self.simple_divisor = QDoubleSpinBox()
+        self.simple_divisor.setRange(1, 100)
+        self.simple_divisor.setValue(3)
+        self.simple_count_divisor = QDoubleSpinBox()
+        self.simple_count_divisor.setRange(1, 100)
+        self.simple_count_divisor.setValue(3)
+        simple_layout.addWidget(QLabel('简表金额/升数除以：'))
+        simple_layout.addWidget(self.simple_divisor)
+        simple_layout.addWidget(QLabel('次数除以：'))
+        simple_layout.addWidget(self.simple_count_divisor)
+        self.simple_closing_balance = QLineEdit()
+        self.simple_closing_balance.setPlaceholderText('可选，填截图中期末余额的合计')
+        simple_layout.addWidget(QLabel('期末余额合计：'))
+        simple_layout.addWidget(self.simple_closing_balance)
+        self.simple_options.hide()
+        date_time_layout.addWidget(self.simple_options)
+        self.simple_hint = QLabel(
+            '简表需油品时间统计、加油明细、充值明细；油品优惠表可选。'
+            '期末余额合计由截图读取后输入，折算后按约定填入 G7；图片不自动识别。'
+            '未说明字段保留模板原值。请核对日期和折算除数。')
+        self.simple_hint.setWordWrap(True)
+        self.simple_hint.hide()
+        date_time_layout.addWidget(self.simple_hint)
+
         date_time_group.setLayout(date_time_layout)
         upload_layout.addWidget(date_time_group)
 
-        # Required files section
-        required_group = QGroupBox("必填图片（必须全部上传）")
-        required_layout = QVBoxLayout()
-        required_layout.setSpacing(0)  # Set spacing to 0 to control spacing manually
-
-        for i, category in enumerate(REQUIRED_IMAGE_CATEGORIES):
-            row_widget = QWidget()
-            row_widget.setAcceptDrops(True)
-            row_widget.setSizePolicy(
-                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-
-            row_layout = QHBoxLayout(row_widget)
-            row_layout.setContentsMargins(10, 5, 10, 5)
-            row_layout.setSpacing(5)  # 添加组件间距
-
-            category_label = QLabel(category)
-            category_label.setMinimumWidth(50)  # 减小最小宽度
-            category_label.setMaximumWidth(80)  # 限制最大宽度
-
-            status_label = QLabel("拖放图片、点击上传或按Ctrl+V粘贴")
-            status_label.setSizePolicy(
-                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-            status_label.setMinimumWidth(100)  # 减小最小宽度
-
-            upload_btn = QPushButton("上传")
-            upload_btn.setMinimumWidth(50)
-            upload_btn.setMaximumWidth(80)
-            upload_btn.clicked.connect(
-                lambda checked, c=category: self._upload_file(c)
-            )
-
-            paste_btn = QPushButton("粘贴")
-            paste_btn.setMinimumWidth(50)
-            paste_btn.setMaximumWidth(80)
-            paste_btn.clicked.connect(
-                lambda checked, c=category: self._handle_clipboard_paste(c)
-            )
-            row_widget.installEventFilter(self)
-            row_widget.dragEnterEvent = lambda e: e.acceptProposedAction(
-            ) if e.mimeData().hasUrls() else None
-            row_widget.dropEvent = lambda e, c=category: self._handle_row_drop(
-                e, c)
-
-            clear_btn = QPushButton("清除")
-            clear_btn.setMinimumWidth(50)
-            clear_btn.setMaximumWidth(80)
-            clear_btn.clicked.connect(
-                lambda checked, c=category: self._clear_category(c)
-            )
-
-            # 修改行布局中组件的添加方式
-            row_layout.addWidget(category_label, 0)  # 类别标签不拉伸
-            row_layout.addWidget(status_label, 1)  # 状态标签占用剩余空间
-            row_layout.addWidget(paste_btn, 0)  # 按钮不拉伸
-            row_layout.addWidget(upload_btn, 0)  # 按钮不拉伸
-            row_layout.addWidget(clear_btn, 0)  # 清除按钮
-
-            required_layout.addWidget(row_widget)
-            self.required_rows[category] = (row_widget, status_label)
-            # Add separator line if not the last item
-            if i < len(REQUIRED_IMAGE_CATEGORIES) - 1:
-                required_layout.addWidget(self._create_separator())
-
-        required_group.setLayout(required_layout)
-        upload_layout.addWidget(required_group)
-
         # 必填表格部分
         required_table_group = QGroupBox("必填表格（必须全部上传）")
+        self.required_table_group = required_table_group
         required_table_layout = QVBoxLayout()
         required_table_layout.setSpacing(0)  # Set spacing to 0 to control spacing manually
 
@@ -734,6 +698,7 @@ class MainWindow(QMainWindow):
         self.result_table.setHorizontalHeaderLabels([
             "文件类型", "文件名", "状态", "处理结果", "操作"
         ])
+        self.result_table.cellClicked.connect(self._handle_table_cell_click)
 
         # Set table properties
         header = self.result_table.horizontalHeader()
@@ -748,8 +713,11 @@ class MainWindow(QMainWindow):
         process_btn.clicked.connect(self._process_all_files)
 
         # Add export button
-        export_btn = QPushButton("导出表格")
-        export_btn.clicked.connect(self._export_output_table)
+        export_btn = QPushButton("导出日报")
+        export_btn.clicked.connect(lambda: self._export_output_table('output_table'))
+        simple_export_btn = QPushButton("导出简表")
+        simple_export_btn.clicked.connect(lambda: self._export_output_table('simple_output_table'))
+        self.template_export_buttons = {'output_table': export_btn, 'simple_output_table': simple_export_btn}
 
         # Add reset button
         reset_btn = QPushButton("重置")
@@ -759,6 +727,7 @@ class MainWindow(QMainWindow):
         button_layout = QHBoxLayout()
         button_layout.addWidget(process_btn)
         button_layout.addWidget(export_btn)
+        button_layout.addWidget(simple_export_btn)
         button_layout.addWidget(reset_btn)
 
         # Add components to results layout
@@ -847,15 +816,29 @@ class MainWindow(QMainWindow):
 
     def _handle_table_upload(self, file_path: Path, category: str):
         """处理表格文件验证和存储"""
+        status_label = None
         try:
+            if self._is_processing():
+                QMessageBox.warning(self, '请稍候', '正在处理文件，请完成后再更换表格')
+                return
             if file_path.suffix.lower() not in ALLOWED_TABLE_EXTENSIONS:
                 QMessageBox.warning(self, "错误", "不支持的表格文件类型，请上传Excel或CSV文件")
                 return
 
             # 更新状态为处理中
-            if category == "output_table":
-                status_label = self.table_status_label
-                self.output_table_path = file_path
+            if category in TEMPLATE_LABELS:
+                status_label = self.template_rows[category][1]
+                if file_path.suffix.lower() != '.xlsx':
+                    raise ValueError('输出模板需为 .xlsx 文件')
+                workbook = openpyxl.load_workbook(file_path, read_only=True)
+                try:
+                    simple_report = is_simple_report(workbook)
+                    if category == 'simple_output_table' and not simple_report:
+                        raise ValueError('请在简表模板栏上传 T-CD 数据简表')
+                    if category == 'output_table' and (simple_report or '调价前' not in workbook.sheetnames):
+                        raise ValueError('请在日报模板栏上传含“调价前”的日报；T-CD 简表请上传到简表模板栏')
+                finally:
+                    workbook.close()
             else:
                 row_tuple = self.required_table_rows.get(
                     category) or self.optional_table_rows.get(category)
@@ -865,19 +848,12 @@ class MainWindow(QMainWindow):
                 status_label.setText("处理中...")
             QApplication.processEvents()  # 确保UI更新
 
-            # 删除之前的文件（如果存在）
-            if category in self.uploaded_files:
-                for old_file in self.uploaded_files[category]:
-                    try:
-                        if old_file.exists():
-                            old_file.unlink()
-                    except Exception as e:
-                        logger.error(f"删除旧文件失败: {str(e)}")
-
             # 根据类别决定文件名和目标路径
-            if category == "output_table":
-                # 输出表格保持原始文件名
-                dest_path = self.output_dir / file_path.name
+            if category in TEMPLATE_LABELS:
+                # Different slots may legitimately use the same filename.
+                folder = self.output_dir / category
+                folder.mkdir(parents=True, exist_ok=True)
+                dest_path = folder / file_path.name
             else:
                 # 其他表格添加时间戳
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -885,7 +861,16 @@ class MainWindow(QMainWindow):
                 dest_path = self.table_dir / new_filename
 
             # Copy file to destination directory
-            shutil.copy2(file_path, dest_path)
+            if file_path.resolve() != dest_path.resolve():
+                shutil.copy2(file_path, dest_path)
+            for old_file in self.uploaded_files.get(category, []):
+                if old_file != dest_path and old_file.exists():
+                    old_file.unlink()
+            if category == 'output_table':
+                self.output_table_path = dest_path
+            elif category == 'simple_output_table':
+                self.simple_output_table_path = dest_path
+            self._refresh_template_options()
 
             # Update tracking for all categories (including output_table)
             self.uploaded_files[category] = [dest_path]
@@ -894,7 +879,7 @@ class MainWindow(QMainWindow):
 
             # 更新状态标签
             if status_label:
-                status_label.setText("已上传")
+                status_label.setText(f"已上传：{file_path.name}")
 
             self._update_table(category)
 
@@ -911,7 +896,7 @@ class MainWindow(QMainWindow):
             if urls:
                 file_path = Path(self._normalize_path(urls[0].toLocalFile()))
                 # 根据类别和文件类型分别处理
-                if category == "output_table" or category in REQUIRED_TABLE_CATEGORIES + OPTIONAL_TABLE_CATEGORIES:
+                if category in TEMPLATE_LABELS or category in REQUIRED_TABLE_CATEGORIES + OPTIONAL_TABLE_CATEGORIES:
                     if file_path.suffix.lower() not in ALLOWED_TABLE_EXTENSIONS:
                         QMessageBox.warning(
                             self, "错误", "不支持的表格文件类型，请上传Excel或CSV文件")
@@ -934,6 +919,12 @@ class MainWindow(QMainWindow):
     def _handle_image_upload(self, category: str, file_path: Path):
         """Handle image files dropped onto the widget"""
         try:
+            if self._is_processing():
+                QMessageBox.warning(self, '请稍候', '正在处理文件，请完成后再上传')
+                return
+            if category not in REQUIRED_IMAGE_CATEGORIES + OPTIONAL_IMAGE_CATEGORIES:
+                QMessageBox.warning(self, '错误', '请在模板或源表栏上传表格文件')
+                return
             if file_path.suffix.lower() not in ALLOWED_IMAGE_EXTENSIONS:
                 QMessageBox.warning(self, "错误", "不支持的图片文件类型，请上传JPG、PNG或BMP文件")
                 return
@@ -985,50 +976,65 @@ class MainWindow(QMainWindow):
             logger.error(f"上传文件错误: {str(e)}")
             QMessageBox.critical(self, "错误", f"上传失败: {str(e)}")
 
+    def _is_processing(self) -> bool:
+        return self.files_to_process > 0 or bool(self.update_workers) or any(
+            self.processing_status.get(category) == '更新中' for category in TEMPLATE_LABELS)
+
+    def _refresh_template_options(self) -> None:
+        self.simple_report = self.simple_output_table_path is not None
+        self.simple_options.setVisible(self.simple_report)
+        self.simple_hint.setVisible(self.simple_report)
+        self.required_table_group.setTitle(
+            '源表（仅填简表时，油品优惠表可选）' if self.simple_report
+            else '必填表格（必须全部上传）')
+
     def _process_all_files(self) -> None:
-        """Process all uploaded files"""
-        if not self._validate_required_files():
-            QMessageBox.warning(self, "警告", "请先上传所有必选文件")
+        """Generate each uploaded template using its own update batch and save path."""
+        if self._is_processing():
             return
-
+        if not self._validate_required_files():
+            QMessageBox.warning(self, '警告', '请先上传模板及对应的必需源表')
+            return
         try:
-            # Initialize pending updates list
+            processor = None
+            if self.simple_output_table_path:
+                processor = SimpleReportProcessor(
+                    replace(self.shift_config), self.simple_divisor.value(), self.simple_count_divisor.value(),
+                    closing_balance=self.simple_closing_balance.text())
             self.pending_updates = []
-
-            # Reset accumulation tracking
+            self.simple_pending_updates = []
+            self.failed_outputs.clear()
             self._category_pending_count = {}
             self._category_partial_results = {}
-
-            # Count total files to process
-            total_files = 0
-            for category, file_list in self.uploaded_files.items():
-                if category == "output_table":
-                    continue
-                if self.processing_status.get(category) == "处理中":
-                    continue
+            legacy_files = {category: files for category, files in self.uploaded_files.items()
+                            if self.output_table_path and files and category not in TEMPLATE_LABELS}
+            self.files_to_process = int(processor is not None) + sum(
+                1 if category in REQUIRED_TABLE_CATEGORIES + OPTIONAL_TABLE_CATEGORIES else len(files)
+                for category, files in legacy_files.items())
+            for category, path in [('output_table', self.output_table_path),
+                                   ('simple_output_table', self.simple_output_table_path)]:
+                if path:
+                    self.processing_status[category] = '处理中'
+                    self._update_table(category)
+            if processor is not None:
+                worker = SimpleReportWorker(processor, {
+                    category: self.uploaded_files[category][0] for category in SIMPLE_CATEGORIES
+                    if self.uploaded_files.get(category)})
+                worker.finished.connect(self._handle_table_processing_complete)
+                worker.error.connect(self._handle_processing_error)
+                self.active_workers.append(worker)
+                worker.start()
+            for category, files in legacy_files.items():
                 if category in REQUIRED_TABLE_CATEGORIES + OPTIONAL_TABLE_CATEGORIES:
-                    total_files += 1  # Tables are single file
+                    self._process_single_table(category, files[0])
                 elif category in REQUIRED_IMAGE_CATEGORIES + OPTIONAL_IMAGE_CATEGORIES:
-                    total_files += len(file_list)
-
-            self.files_to_process = total_files
-
-            # Process each category
-            for category, file_list in self.uploaded_files.items():
-                if category == "output_table" or self.processing_status.get(category) == "处理中":
-                    continue
-
-                if category in REQUIRED_TABLE_CATEGORIES + OPTIONAL_TABLE_CATEGORIES:
-                    self._process_single_table(category, file_list[0])
-                elif category in REQUIRED_IMAGE_CATEGORIES + OPTIONAL_IMAGE_CATEGORIES:
-                    self._category_pending_count[category] = len(file_list)
+                    self._category_pending_count[category] = len(files)
                     self._category_partial_results[category] = []
-                    for file_path in file_list:
-                        self._process_single_image(category, file_path)
-
-        except Exception as e:
-            logger.error(f"Error in process_all_files: {str(e)}")
-            QMessageBox.critical(self, "错误", f"处理文件时出错: {str(e)}")
+                    for path in files:
+                        self._process_single_image(category, path)
+        except Exception as error:
+            logger.error(f'Error in process_all_files: {error}')
+            QMessageBox.critical(self, '错误', f'处理文件时出错: {error}')
 
     def _check_all_processing_complete(self) -> None:
         """Check if all files have been processed"""
@@ -1036,13 +1042,8 @@ class MainWindow(QMainWindow):
 
         # Only emit completion signal when all processing is done
         if self.files_to_process <= 0:
-            # Directly start updates if we have any
-            if self.pending_updates:
-                logger.info(
-                    f"All processing complete. Starting {len(self.pending_updates)} updates at {datetime.now()}")
-                self._apply_all_updates()
-            else:
-                logger.info("All processing complete. No updates to apply.")
+            self.files_to_process = 0
+            self._apply_all_updates()
 
             # Schedule worker cleanup for next event loop iteration
             QTimer.singleShot(0, self._cleanup_workers)
@@ -1131,11 +1132,17 @@ class MainWindow(QMainWindow):
             self.processing_results[category] = result.get(
                 'processed_data', {})
 
-            # 将更新指令添加到待处理列表
-            if 'updates' in result:
-                self.pending_updates.extend(result['updates'])
+            if category == 'simple_output_table' and not self.output_table_path:
+                for source_category in SIMPLE_CATEGORIES:
+                    if self.uploaded_files.get(source_category):
+                        self.processing_status[source_category] = '完成'
+                        self._update_table(source_category)
 
-            self.processing_status[category] = "完成"
+            if 'updates' in result:
+                target = self.simple_pending_updates if category == 'simple_output_table' else self.pending_updates
+                target.extend(result['updates'])
+
+            self.processing_status[category] = '待写入' if category in TEMPLATE_LABELS else '完成'
             self._update_table(category)
 
             # Use QTimer to check completion status in next event loop
@@ -1186,6 +1193,7 @@ class MainWindow(QMainWindow):
 
     def _handle_processing_error(self, error_message: str, category: str) -> None:
         """Handle processing error"""
+        self.failed_outputs.add('simple_output_table' if category == 'simple_output_table' else 'output_table')
         # Decrement pending count for multi-image categories
         if category in self._category_pending_count:
             self._category_pending_count[category] -= 1
@@ -1197,66 +1205,54 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._check_all_processing_complete)
 
     def _on_all_processing_complete(self) -> None:
-        """Handle completion of all processing tasks"""
-        if self.pending_updates:
-            logger.info(
-                f"All processing complete. Will apply {len(self.pending_updates)} updates")
-            # Use QTimer.singleShot to defer the update operation
-            QTimer.singleShot(100, self._apply_all_updates)
-        else:
-            logger.info("All processing complete. No updates to apply.")
+        if self.files_to_process <= 0 and not self.update_workers:
+            self._apply_all_updates()
 
     def _apply_all_updates(self) -> None:
-        """
-        Apply all pending updates to the workbook.
-        This method should only be called when all processing is complete.
-        """
-        if not self.pending_updates:  # Skip if no updates to apply
-            return
+        """Never mix legacy and simple-report cell updates in the same workbook."""
+        for category, path, updates in [
+            ('output_table', self.output_table_path, self.pending_updates),
+            ('simple_output_table', self.simple_output_table_path, self.simple_pending_updates),
+        ]:
+            if not path or category in self.update_workers:
+                continue
+            if category in self.failed_outputs:
+                updates.clear()
+                self.processing_status[category] = '处理失败，未写入'
+                self._update_table(category)
+                continue
+            if not updates:
+                continue
+            try:
+                self.processing_status[category] = '更新中'
+                self._update_table(category)
+                worker = ExcelUpdateWorker(path, list(updates))
+                worker.finished.connect(
+                    lambda success, message, c=category: self._handle_update_complete(success, message, c))
+                self.update_workers[category] = worker
+                worker.start()
+            except Exception as error:
+                self.update_workers.pop(category, None)
+                self.processing_status[category] = '更新失败'
+                self._update_table(category)
+                QMessageBox.critical(self, '错误', f'{TEMPLATE_LABELS[category]}更新失败: {error}')
 
-        try:
-            # Update status to show we're updating the Excel file
-            self.processing_status["output_table"] = "更新中"
-            self._update_table("output_table")
-            logger.info(
-                f"Updating Excel file at {datetime.now()}")
-            # Create and start the update worker
-            assert self.output_table_path is not None
-            self.update_worker = ExcelUpdateWorker(
-                self.output_table_path,
-                self.pending_updates
-            )
-            self.update_worker.finished.connect(self._handle_update_complete)
-            logger.info(
-                f"Starting update worker at {datetime.now()}")
-            self.update_worker.start()
-
-        except Exception as e:
-            logger.error(f"Error starting update worker: {str(e)}")
-            self.processing_status["output_table"] = "更新失败"
-            self._update_table("output_table")
-            QMessageBox.critical(self, "错误", f"启动表格更新失败: {str(e)}")
-
-    def _handle_update_complete(self, success: bool, error_message: str) -> None:
-        """Handle completion of Excel update operation"""
+    def _handle_update_complete(self, success: bool, error_message: str, category: str) -> None:
         try:
             if success:
-                self.processing_status["output_table"] = "完成"
-                # Clear pending updates after successful application
-                self.pending_updates = []
+                self.processing_status[category] = ('已填写，待核对保留项'
+                                                     if category == 'simple_output_table' else '完成')
+                updates = self.simple_pending_updates if category == 'simple_output_table' else self.pending_updates
+                updates.clear()
             else:
-                self.processing_status["output_table"] = "更新失败"
-                QMessageBox.critical(self, "错误", f"更新和保存表格失败: {error_message}")
-        except Exception as e:
-            logger.error(f"Error in update completion handler: {str(e)}")
-            self.processing_status["output_table"] = "更新失败"
+                self.processing_status[category] = '更新失败'
+                QMessageBox.critical(self, '错误', f'{TEMPLATE_LABELS[category]}保存失败: {error_message}')
         finally:
-            # Clean up worker
-            self._update_table("output_table")
-            if hasattr(self, 'update_worker'):
-                self.update_worker.quit()
-                self.update_worker.wait()
-                self.update_worker.deleteLater()
+            self._update_table(category)
+            worker = self.update_workers.pop(category, None)
+            if worker is not None:
+                worker.wait()
+                worker.deleteLater()
 
     def _update_table_row(self, category: str, row: int) -> None:
         """Update a specific row in the results table
@@ -1270,7 +1266,9 @@ class MainWindow(QMainWindow):
         file_path = file_list[-1]  # Show the last uploaded file
 
         # Category
-        self.result_table.setItem(row, 0, QTableWidgetItem(category))
+        category_item = QTableWidgetItem(TEMPLATE_LABELS.get(category, category))
+        category_item.setData(Qt.ItemDataRole.UserRole, category)
+        self.result_table.setItem(row, 0, category_item)
 
         # Filename - make it clickable
         if len(file_list) > 1:
@@ -1340,7 +1338,7 @@ class MainWindow(QMainWindow):
             action_btn.clicked.connect(
                 lambda checked, c=category: self._upload_file(c))
             self.result_table.setCellWidget(row, 4, action_btn)
-        elif category in (REQUIRED_TABLE_CATEGORIES + OPTIONAL_TABLE_CATEGORIES + ["output_table"]):
+        elif category in (REQUIRED_TABLE_CATEGORIES + OPTIONAL_TABLE_CATEGORIES + list(TEMPLATE_LABELS)):
             action_btn = QPushButton("重新上传")
             action_btn.clicked.connect(
                 lambda checked, c=category: self._upload_table_file(c))
@@ -1354,19 +1352,12 @@ class MainWindow(QMainWindow):
         Args:
             category: Optional category to update. If None, update all rows
         """
-        # Safely disconnect existing cell click handler
-        # try:
-        #     # Disconnect all connections to avoid duplicates
-        #     self.result_table.cellClicked.disconnect()
-        # except:
-        #     pass
-
         if category:
             # Find the row for this category
             row = -1
             for i in range(self.result_table.rowCount()):
                 item = self.result_table.item(i, 0)
-                if item is not None and item.text() == category:
+                if item is not None and item.data(Qt.ItemDataRole.UserRole) == category:
                     row = i
                     break
 
@@ -1387,9 +1378,6 @@ class MainWindow(QMainWindow):
                 self.result_table.insertRow(row)
                 self._update_table_row(category, row)
 
-        # Always reconnect the cell click event
-        self.result_table.cellClicked.connect(self._handle_table_cell_click)
-
     def _handle_table_cell_click(self, row: int, column: int) -> None:
         """Handle table cell click to show preview"""
         if column == 1:  # Filename column
@@ -1402,7 +1390,7 @@ class MainWindow(QMainWindow):
                 if not category_item:
                     return
 
-                category = category_item.text()
+                category = category_item.data(Qt.ItemDataRole.UserRole)
 
                 # 检查文件是否存在
                 if not file_path.exists():
@@ -1416,7 +1404,7 @@ class MainWindow(QMainWindow):
                         self.preview_dialog = None
 
                     # 根据文件类型选择不同的预览方式
-                    if category == "output_table" or category in REQUIRED_TABLE_CATEGORIES + OPTIONAL_TABLE_CATEGORIES:
+                    if category in TEMPLATE_LABELS or category in REQUIRED_TABLE_CATEGORIES + OPTIONAL_TABLE_CATEGORIES:
                         # 表格预览
                         if file_path.suffix.lower() in ALLOWED_TABLE_EXTENSIONS:
                             self.preview_dialog = TablePreviewDialog(
@@ -1436,42 +1424,17 @@ class MainWindow(QMainWindow):
                     QMessageBox.critical(self, "错误", f"无法访问文件: {str(e)}")
 
     def _validate_required_files(self) -> bool:
-        """验证所有必填文件和表格文件已上传"""
-        has_required = all(
-            category in self.uploaded_files and len(self.uploaded_files[category]) > 0
-            for category in REQUIRED_IMAGE_CATEGORIES + REQUIRED_TABLE_CATEGORIES)
-        has_table = self.output_table_path is not None
-        if not has_table:
-            QMessageBox.warning(self, "警告", "请先上传输出表格文件")
-        return has_required and has_table
+        if not self.output_table_path and not self.simple_output_table_path:
+            QMessageBox.warning(self, '警告', '请先上传日报模板或简表模板')
+            return False
+        required = REQUIRED_TABLE_CATEGORIES if self.output_table_path else SIMPLE_REQUIRED_CATEGORIES
+        return all(self.uploaded_files.get(category) for category in required)
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         """Handle widget events for clipboard paste support"""
-        # Check if the object is one of our upload widgets
-        category = "output_table"
-        # Check required image rows
-        for cat, (widget, _) in self.required_rows.items():
-            if obj == widget:
-                category = cat
-                break
-        # Check optional image rows
-        if category == "output_table":
-            for cat, (widget, _) in self.optional_rows.items():
-                if obj == widget:
-                    category = cat
-                    break
-        # Check required table rows
-        if category == "output_table":
-            for cat, (widget, _) in self.required_table_rows.items():
-                if obj == widget:
-                    category = cat
-                    break
-        # Check optional table rows
-        if category == "output_table":
-            for cat, (widget, _) in self.optional_table_rows.items():
-                if obj == widget:
-                    category = cat
-                    break
+        rows = {**self.template_rows, **self.required_rows, **self.optional_rows,
+                **self.required_table_rows, **self.optional_table_rows}
+        category = next((key for key, (widget, _) in rows.items() if obj == widget), None)
 
         if category:
             if event.type() == QEvent.Type.Enter:
@@ -1483,8 +1446,8 @@ class MainWindow(QMainWindow):
 
                 # Get the appropriate status label
                 status_label = None
-                if category == "output_table":
-                    status_label = self.table_status_label
+                if category in TEMPLATE_LABELS:
+                    status_label = self.template_rows[category][1]
                 else:
                     row_tuple = (self.required_rows.get(category) or
                                 self.optional_rows.get(category) or
@@ -1509,7 +1472,7 @@ class MainWindow(QMainWindow):
                 mime_data = self.clipboard.mimeData()
 
                 # 检查是否为表格类别
-                is_table_category = (category == "output_table" or
+                is_table_category = (category in TEMPLATE_LABELS or
                                      category in REQUIRED_TABLE_CATEGORIES + OPTIONAL_TABLE_CATEGORIES)
 
                 # 检查剪贴板内容类型
@@ -1546,8 +1509,8 @@ class MainWindow(QMainWindow):
 
                 # Get the appropriate status label
                 status_label = None
-                if category == "output_table":
-                    status_label = self.table_status_label
+                if category in TEMPLATE_LABELS:
+                    status_label = self.template_rows[category][1]
                 else:
                     row_tuple = (self.required_rows.get(category) or
                                 self.optional_rows.get(category) or
@@ -1566,7 +1529,7 @@ class MainWindow(QMainWindow):
                             status_label.setText("已上传")
                     else:
                         # 根据类别显示相应的默认提示文本
-                        if category == "output_table" or category in REQUIRED_TABLE_CATEGORIES + OPTIONAL_TABLE_CATEGORIES:
+                        if category in TEMPLATE_LABELS or category in REQUIRED_TABLE_CATEGORIES + OPTIONAL_TABLE_CATEGORIES:
                             status_label.setText("拖放表格、点击上传或按Ctrl+V粘贴")
                         else:
                             status_label.setText("拖放图片、点击上传或按Ctrl+V粘贴")
@@ -1585,6 +1548,9 @@ class MainWindow(QMainWindow):
 
     def _handle_clipboard_paste(self, category: str) -> None:
         """Handle clipboard paste event for images"""
+        if self._is_processing():
+            QMessageBox.warning(self, '请稍候', '正在处理文件，请完成后再粘贴')
+            return
         try:
             mime_data = self.clipboard.mimeData()
 
@@ -1627,6 +1593,9 @@ class MainWindow(QMainWindow):
                             status_label.setText("不支持的文件类型")
                         return
             elif mime_data.hasImage():
+                if category not in REQUIRED_IMAGE_CATEGORIES + OPTIONAL_IMAGE_CATEGORIES:
+                    QMessageBox.warning(self, '错误', '请在模板或源表栏粘贴表格文件')
+                    return
                 if status_label:
                     status_label.setText("正在处理图片...")
                 QApplication.processEvents()
@@ -1730,7 +1699,10 @@ class MainWindow(QMainWindow):
             self.save_worker.deleteLater()
 
     def _clear_category(self, category: str) -> None:
-        """Clear all uploaded files for an image category."""
+        """Clear one source or template slot without affecting the other output."""
+        if self._is_processing():
+            QMessageBox.warning(self, '提示', '正在处理文件，请完成后再清除')
+            return
         if category in self.uploaded_files:
             for file_path in self.uploaded_files[category]:
                 try:
@@ -1743,24 +1715,32 @@ class MainWindow(QMainWindow):
         self.processing_status.pop(category, None)
         self.processing_results.pop(category, None)
 
+        if category == 'output_table':
+            self.output_table_path = None
+        elif category == 'simple_output_table':
+            self.simple_output_table_path = None
+            self.simple_closing_balance.clear()
+        self._refresh_template_options()
+
         # Reset status label
-        _, status_label = (self.required_rows.get(category) or
+        _, status_label = (self.template_rows.get(category) or self.required_rows.get(category) or
                            self.optional_rows.get(category) or
                            (None, None))
         if status_label:
-            status_label.setText("拖放图片、点击上传或按Ctrl+V粘贴")
+            status_label.setText('拖放模板、点击上传或按 Ctrl+V 粘贴' if category in TEMPLATE_LABELS
+                                 else '拖放图片、点击上传或按Ctrl+V粘贴')
 
         # Remove from results table
         for i in range(self.result_table.rowCount()):
             item = self.result_table.item(i, 0)
-            if item is not None and item.text() == category:
+            if item is not None and item.data(Qt.ItemDataRole.UserRole) == category:
                 self.result_table.removeRow(i)
                 break
 
     def _upload_table_file(self, category: str) -> None:
         """Handle table file upload for a specific category."""
         file_path, _ = QFileDialog.getOpenFileName(
-            self, f"选择{category}文件", "",
+            self, f"选择{TEMPLATE_LABELS.get(category, category)}文件", "",
             "Table Files (*.xlsx *.xls *.csv)"
         )
         if file_path:
@@ -1825,6 +1805,14 @@ class MainWindow(QMainWindow):
             self._category_pending_count.clear()
             self._category_partial_results.clear()
             self.output_table_path = None
+            self.simple_output_table_path = None
+            self.simple_pending_updates.clear()
+            self.failed_outputs.clear()
+            self.simple_report = False
+            self.simple_options.hide()
+            self.simple_hint.hide()
+            self.simple_closing_balance.clear()
+            self.required_table_group.setTitle('必填表格（必须全部上传）')
 
             # Reset status labels
             for _, status_label in self.required_rows.values():
@@ -1835,7 +1823,8 @@ class MainWindow(QMainWindow):
                 status_label.setText("拖放表格、点击上传或按Ctrl+V粘贴")
             for _, status_label in self.optional_table_rows.values():
                 status_label.setText("拖放表格、点击上传或按Ctrl+V粘贴")
-            self.table_status_label.setText("拖放表格、点击上传或按Ctrl+V粘贴")
+            for _, label in self.template_rows.values():
+                label.setText('拖放模板、点击上传或按 Ctrl+V 粘贴')
 
             # Clear result table
             self.result_table.setRowCount(0)
@@ -1847,25 +1836,18 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "错误", f"重置过程中出错: {str(e)}")
 
     def closeEvent(self, event) -> None:
-        """Handle application closing"""
-        try:
-            self._perform_reset()
-
-            # Safely wait for update worker if it exists and is running
-            if hasattr(self, 'update_worker'):
-                try:
-                    if self.update_worker.isRunning():
-                        self.update_worker.wait()
-                except RuntimeError:
-                    logger.info(
-                        "Update worker already deleted. Skipping wait.")
-            event.accept()
-        except Exception as e:
-            logger.error(f"Error during application close: {str(e)}")
-            event.accept()  # Still close the application even if there's an error
+        if self._is_processing():
+            QMessageBox.warning(self, '提示', '正在处理文件，请完成后再关闭')
+            event.ignore()
+            return
+        self._perform_reset()
+        event.accept()
 
     def _reset_all(self) -> None:
         """Reset all uploaded files and UI state"""
+        if self._is_processing():
+            QMessageBox.warning(self, '提示', '正在处理文件，请完成后再重置')
+            return
         # Show confirmation dialog
         reply = QMessageBox.question(
             self,
@@ -1881,25 +1863,28 @@ class MainWindow(QMainWindow):
         self._perform_reset()
         QMessageBox.information(self, "成功", "已重置所有内容", QMessageBox.StandardButton.Ok)
 
-    def _export_output_table(self) -> None:
+    def _export_output_table(self, category: str = 'output_table') -> None:
         """Export the output table to a user-specified location"""
-        if not self.output_table_path or not self.output_table_path.exists():
-            QMessageBox.warning(self, "警告", "没有可导出的表格文件")
+        if self._is_processing():
+            QMessageBox.warning(self, "提示", "表格正在处理，请完成后再输出")
+            return
+        path = self.simple_output_table_path if category == 'simple_output_table' else self.output_table_path
+        if not path or not path.exists():
+            QMessageBox.warning(self, "警告", f"没有可导出的{TEMPLATE_LABELS[category]}")
             return
 
         try:
             # Get the destination path from user
             dest_path, _ = QFileDialog.getSaveFileName(
                 self,
-                "导出表格",
-                # Use original filename as default
-                str(self.output_table_path.name),
+                '导出简表' if category == 'simple_output_table' else '导出日报',
+                str(path.name),
                 "Excel Files (*.xlsx *.xls);;All Files (*.*)"
             )
 
             if dest_path:
                 # Copy the file
-                shutil.copy2(self.output_table_path, dest_path)
+                shutil.copy2(path, dest_path)
                 QMessageBox.information(self, "成功", "表格导出成功", QMessageBox.StandardButton.Ok)
         except Exception as e:
             logger.error(f"导出表格错误: {str(e)}")
