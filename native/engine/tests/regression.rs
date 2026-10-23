@@ -25,7 +25,7 @@ fn request(root: &Path) -> Request {
 }
 fn fixture(root: &Path) {
     std::fs::write(root.join("stats.csv"),"机号,油品,加油升,加油元,次数\n3,0#柴油,30,240,1\n9,92#汽油,30,270,1\n11,95#汽油,30,300,1\n汇总,,90,810,3\n").unwrap();
-    std::fs::write(root.join("details.csv"),"油品,单价,升数,油机金额,结算金额,优惠金额,收款方式\n0#柴油,8,30,240,234,6,充值卡收款 \n92#汽油,9,30,270,258,9,电子卡收款 \n95#汽油,10,30,300,300,0,现金收款\n").unwrap();
+    std::fs::write(root.join("details.csv"),"油品,单价,升数,油机金额,结算金额,优惠金额,收款方式,IC卡余额\n0#柴油,8,30,240,234,6,充值卡收款 ,0\n92#汽油,9,30,270,258,9,电子卡收款 ,0\n95#汽油,10,30,300,300,0,现金收款,0\n").unwrap();
     std::fs::write(root.join("recharge.csv"),"原余额,充值金额,充值赠送,付款方式\n100,300,30,现金收款 \n100,600,0,微信收款 \n100,600,0,支付宝收款\n0,0,0,\n次数,1500,30,\n").unwrap();
 }
 fn value(report: &financial_engine::Report, cell: &str) -> String {
@@ -33,6 +33,184 @@ fn value(report: &financial_engine::Report, cell: &str) -> String {
         Cell::Number(v) => v.clone(),
         other => panic!("unexpected {other:?}"),
     }
+}
+fn price_change_fixture(root: &Path) -> Request {
+    fixture(root);
+    std::fs::write(root.join("stats.csv"), "油品时间统计\n时间：2026-10-20 07:00:00------2026-10-20 12:00:00\n站号,机号,油品,加油升,加油元,次数\n14,3,0#柴油,30.01,240.08,1\n14,9,92#汽油,3.01,27.09,1\n14,11,95#汽油,6.01,60.10,1\n合计,,,39.03,327.27,3\n").unwrap();
+    std::fs::write(root.join("after.csv"), "油品时间统计\n时间：2026-10-20 12:00:00------2026-10-21 07:00:00\n站号,机号,油品,加油升,加油元,次数\n14,3,0#柴油,30.01,270.09,1\n14,9,92#汽油,3.01,30.10,1\n14,11,95#汽油,6.01,66.11,1\n合计,,,39.03,366.30,3\n").unwrap();
+    std::fs::write(root.join("details.csv"), "加油明细\n时间：2026-10-20 07:00:00------2026-10-21 07:00:00\n油品,单价,升数,油机金额,结算金额,优惠金额,收款方式,IC卡余额,加油完成时间\n0#柴油,8,30.01,240.08,240.08,0,现金收款,0,2026-10-20 11:00:00\n0#柴油,9,30.01,270.09,270.09,0,现金收款,0,2026-10-20 12:00:00\n92#汽油,9,3.01,27.09,27.09,0,现金收款,0,2026-10-20 11:00:00\n92#汽油,10,3.01,30.10,30.10,0,现金收款,0,2026-10-20 12:00:00\n95#汽油,10,6.01,60.10,60.10,0,现金收款,0,2026-10-20 11:00:00\n95#汽油,11,6.01,66.11,66.11,0,现金收款,0,2026-10-20 12:00:00\n").unwrap();
+    let mut req = request(root);
+    req.sources
+        .insert("油品时间统计(调价后)".into(), root.join("after.csv"));
+    req
+}
+
+#[test]
+fn price_change_combines_litres_amounts_counts_and_periods() {
+    let dir = tempfile::tempdir().unwrap();
+    let req = price_change_fixture(dir.path());
+    let result = report::simple(&req).unwrap();
+    for (cell, expected) in [
+        ("B3", "20"),
+        ("D3", "170"),
+        ("E3", "1"),
+        ("B4", "2"),
+        ("D4", "19"),
+        ("E4", "1"),
+        ("B5", "4"),
+        ("D5", "42"),
+        ("E5", "1"),
+    ] {
+        assert_eq!(value(&result, cell), expected, "{cell}");
+    }
+    let template = Path::new(env!("CARGO_MANIFEST_DIR")).join("../app/fixtures/simple.xlsx");
+    let report = report::simple_for_template(&req, &template).unwrap();
+    let output = dir.path().join("simple.xlsx");
+    workbook::write(&template, &output, &report.updates).unwrap();
+    let mut book = calamine::open_workbook_auto(output).unwrap();
+    let range = book.worksheet_range_at(0).unwrap().unwrap();
+    assert_eq!(range.get_value((2, 1)).unwrap().to_string(), "20");
+    assert_eq!(range.get_value((2, 3)).unwrap().to_string(), "170");
+    assert_eq!(range.get_value((2, 4)).unwrap().to_string(), "1");
+}
+
+#[test]
+fn after_statistics_are_validated_instead_of_ignored() {
+    let dir = tempfile::tempdir().unwrap();
+    let req = price_change_fixture(dir.path());
+    let path = dir.path().join("after.csv");
+    let original = std::fs::read_to_string(&path).unwrap();
+    for (from, to, message) in [
+        ("30.01,270.09,1", "31.01,270.09,1", "升数不一致"),
+        ("30.01,270.09,1", "30.01,271.09,1", "油机金额不一致"),
+        ("30.01,270.09,1", "30.01,270.09,2", "次数不一致"),
+        ("\n14,", "\n15,", "站号不一致"),
+        ("2026-10-21 07:00:00", "2026-10-21 06:00:00", "时段不一致"),
+        ("95#汽油", "98#汽油", "未支持的油品"),
+        ("加油元", "缺失金额列", "找不到表头"),
+    ] {
+        std::fs::write(&path, original.replace(from, to)).unwrap();
+        let error = report::simple(&req).unwrap_err();
+        assert!(format!("{error:#}").contains(message), "{error:#}");
+    }
+}
+
+fn daily_template_with_after(root: &Path) -> PathBuf {
+    let template = root.join("daily.xlsx");
+    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../app/fixtures/daily.xlsx");
+    let mut input = ZipArchive::new(File::open(fixture).unwrap()).unwrap();
+    let mut output = ZipWriter::new(File::create(&template).unwrap());
+    for i in 0..input.len() {
+        let mut entry = input.by_index(i).unwrap();
+        let name = entry.name().to_owned();
+        let mut bytes = vec![];
+        entry.read_to_end(&mut bytes).unwrap();
+        if [
+            "xl/workbook.xml",
+            "xl/_rels/workbook.xml.rels",
+            "[Content_Types].xml",
+        ]
+        .contains(&name.as_str())
+        {
+            let xml = String::from_utf8(bytes).unwrap();
+            bytes = match name.as_str() {
+                "xl/workbook.xml" => xml.replace("</sheets>", r#"<sheet name="调价后" sheetId="3" r:id="rId3"/></sheets>"#),
+                "xl/_rels/workbook.xml.rels" => xml.replace("</Relationships>", r#"<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet3.xml"/></Relationships>"#),
+                _ => xml.replace("</Types>", r#"<Override PartName="/xl/worksheets/sheet3.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>"#),
+            }.into_bytes();
+        }
+        output
+            .start_file(name, SimpleFileOptions::default())
+            .unwrap();
+        output.write_all(&bytes).unwrap();
+    }
+    output
+        .start_file("xl/worksheets/sheet3.xml", SimpleFileOptions::default())
+        .unwrap();
+    output.write_all(br#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>
+        <row r="3"><c r="A3" t="inlineStr"><is><t>A</t></is></c><c r="B3"><v>3</v></c><c r="D3"><v>999</v></c><c r="G3"><v>7</v></c><c r="H3"><f>D3*G3</f><v>6993</v></c></row>
+        <row r="4"><c r="A4" t="inlineStr"><is><t>B</t></is></c><c r="B4"><v>9</v></c><c r="D4"><v>999</v></c><c r="G4"><v>7</v></c><c r="H4"><f>D4*G4</f><v>6993</v></c></row>
+        <row r="5"><c r="A5" t="inlineStr"><is><t>C</t></is></c><c r="B5"><v>11</v></c><c r="D5"><v>999</v></c><c r="G5"><v>7</v></c><c r="H5"><f>D5*G5</f><v>6993</v></c></row>
+        </sheetData></worksheet>"#).unwrap();
+    output.finish().unwrap();
+    template
+}
+
+#[test]
+fn same_price_splits_keep_original_algorithm_and_daily_template_prices_cannot_change_it() {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path());
+    std::fs::write(
+        dir.path().join("stats.csv"),
+        "机号,油品,加油升,加油元,次数\n9,92#汽油,123.65,1075.73,1\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("after.csv"),
+        "机号,油品,加油升,加油元,次数\n9,92#汽油,315.02,2739.85,1\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("details.csv"), "油品,单价,升数,油机金额,结算金额,优惠金额,收款方式,IC卡余额\n92#汽油,8.7,123.65,1075.73,1075.73,0,现金收款,0\n92#汽油,8.7,315.02,2739.85,2739.85,0,现金收款,0\n").unwrap();
+    let mut req = request(dir.path());
+    req.sources
+        .insert("油品时间统计(调价后)".into(), dir.path().join("after.csv"));
+    let simple = report::simple(&req).unwrap();
+    assert_eq!(value(&simple, "B4"), "146.22");
+    assert_eq!(value(&simple, "D4"), "1272.11");
+    assert_eq!(value(&simple, "E4"), "1");
+    std::fs::write(dir.path().join("discounts.csv"), "油品,优惠\n92#汽油,0\n").unwrap();
+    req.sources
+        .insert("油品优惠".into(), dir.path().join("discounts.csv"));
+    let template = daily_template_with_after(dir.path());
+    let daily = report::daily(&req, &template).unwrap();
+    for (sheet, cell, expected) in [
+        ("调价前", "D4", "146.22"),
+        ("调价前", "G4", "8.7"),
+        ("调价后", "D4", "0"),
+    ] {
+        assert!(matches!(&daily.updates[sheet].cells[cell], Cell::Number(v) if v == expected));
+    }
+    let output = dir.path().join("out.xlsx");
+    workbook::write(&template, &output, &daily.updates).unwrap();
+    let mut book = calamine::open_workbook_auto(output).unwrap();
+    assert_eq!(
+        book.worksheet_formula("调价后")
+            .unwrap()
+            .get_value((3, 7))
+            .unwrap(),
+        "D4*G4"
+    );
+}
+
+#[test]
+fn actual_price_change_uses_each_periods_source_price_in_daily() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut req = price_change_fixture(dir.path());
+    std::fs::write(
+        dir.path().join("discounts.csv"),
+        "油品,优惠\n0#柴油,0\n92#汽油,0\n95#汽油,0\n",
+    )
+    .unwrap();
+    req.sources
+        .insert("油品优惠".into(), dir.path().join("discounts.csv"));
+    let template = daily_template_with_after(dir.path());
+    let daily = report::daily(&req, &template).unwrap();
+    for (sheet, cell, expected) in [
+        ("调价前", "D3", "10"),
+        ("调价前", "G3", "8"),
+        ("调价后", "D3", "10"),
+        ("调价后", "G3", "9"),
+        ("调价后", "G5", "11"),
+    ] {
+        assert!(
+            matches!(&daily.updates[sheet].cells[cell], Cell::Number(v) if v == expected),
+            "{sheet} {cell}"
+        );
+    }
+    let path = dir.path().join("details.csv");
+    let original = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, original.replace("2026-10-20 12:00:00", "bad-time")).unwrap();
+    assert!(format!("{:#}", report::daily(&req, &template).unwrap_err()).contains("加油完成时间"));
 }
 #[test]
 fn consumption_recharge_and_count_rules() {
@@ -51,6 +229,118 @@ fn consumption_recharge_and_count_rules() {
     }
     assert!(matches!(r.updates["Sheet1"].cells["B8"], Cell::Blank));
     assert!(!r.updates["Sheet1"].cells.contains_key("B10"));
+}
+#[test]
+fn no_card_checks_balance_and_excludes_tank_returns() {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path());
+    std::fs::write(
+        dir.path().join("stats.csv"),
+        "机号,油品,加油升,加油元,次数\n1,0#柴油,10,80,1\n2,92#汽油,40,360,4\n3,95#汽油,20,200,2\n",
+    )
+    .unwrap();
+    std::fs::write(dir.path().join("details.csv"), "油品,单价,升数,油机金额,结算金额,优惠金额,收款方式,IC卡余额,卡号\n0#柴油,8,10,80,80,0,现金收款,0,0\n92#汽油,9,10,90,0,0,现金收款,0,0\n92#汽油,9,10,90,85,5,现金收款,0,0\n95#汽油,10,10,100,100,0,充值卡收款,0,0\n92#汽油,9,10,90,90,0,现金收款,10,0\n95#汽油,10,10,100,100,0,回罐收款  ,0,9321\n92#汽油,9,10,90,90,0,现金收款,0,123\n").unwrap();
+    let mut req = request(dir.path());
+    req.count_divisor = "1".into();
+    let report = report::simple(&req).unwrap();
+    assert_eq!(value(&report, "B13"), "2");
+    assert_eq!(value(&report, "D13"), "63.33");
+}
+
+#[test]
+fn missing_or_invalid_card_balance_is_not_zero() {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path());
+    let path = dir.path().join("details.csv");
+    let data = std::fs::read_to_string(&path).unwrap();
+    for invalid in ["", "bad", "NaN", "Infinity"] {
+        std::fs::write(
+            &path,
+            data.replace("300,0,现金收款,0", &format!("300,0,现金收款,{invalid}")),
+        )
+        .unwrap();
+        let error = report::simple(&request(dir.path())).unwrap_err();
+        assert!(format!("{error:#}").contains("IC卡余额"));
+    }
+    std::fs::write(&path, data.replace(",IC卡余额", "")).unwrap();
+    let error = report::simple(&request(dir.path())).unwrap_err();
+    assert!(format!("{error:#}").contains("IC卡余额"));
+}
+
+#[test]
+fn simple_uses_first_sheet_with_optional_matching_detail_page() {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path());
+    let second_sheet = regex::Regex::new(r#"<sheet name="Sheet2"[^>]*/>"#).unwrap();
+    for (names, detail) in [
+        (vec!["Sheet3", "Sheet1"], false),
+        (vec!["Sheet2", "Sheet1"], true),
+        (vec!["改名主表", "改名明细"], true),
+        (vec!["首张"], false),
+    ] {
+        let template = dir.path().join("simple.xlsx");
+        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../app/fixtures/simple.xlsx");
+        let mut input = ZipArchive::new(File::open(fixture).unwrap()).unwrap();
+        let mut output = ZipWriter::new(File::create(&template).unwrap());
+        for i in 0..input.len() {
+            let mut entry = input.by_index(i).unwrap();
+            let name = entry.name().to_owned();
+            let mut bytes = vec![];
+            entry.read_to_end(&mut bytes).unwrap();
+            if name == "xl/workbook.xml" {
+                let mut xml = String::from_utf8(bytes).unwrap();
+                if names.len() == 1 {
+                    xml = second_sheet.replace(&xml, "").into_owned();
+                }
+                xml = xml
+                    .replace("name=\"Sheet1\"", "name=\"__first__\"")
+                    .replace(
+                        "name=\"Sheet2\"",
+                        &format!("name=\"{}\"", names.last().unwrap()),
+                    )
+                    .replace("name=\"__first__\"", &format!("name=\"{}\"", names[0]));
+                bytes = xml.into_bytes();
+            } else if name == "xl/worksheets/sheet2.xml" && !detail {
+                bytes = String::from_utf8(bytes)
+                    .unwrap()
+                    .replace("油品", "保留数据")
+                    .into_bytes();
+            }
+            output
+                .start_file(name, SimpleFileOptions::default())
+                .unwrap();
+            output.write_all(&bytes).unwrap();
+        }
+        output.finish().unwrap();
+        let result = report::simple_for_template(&request(dir.path()), &template).unwrap();
+        assert_eq!(result.updates.len(), if detail { 2 } else { 1 });
+        assert!(matches!(&result.updates[names[0]].cells["D11"], Cell::Number(n) if n == "164"));
+        if detail {
+            assert!(result.updates[names[1]].cells.contains_key("D5"));
+        }
+        let path = dir.path().join("output.xlsx");
+        workbook::write(&template, &path, &result.updates).unwrap();
+        let mut book = calamine::open_workbook_auto(&path).unwrap();
+        assert_eq!(book.sheet_names(), names);
+        assert_eq!(
+            book.worksheet_range_at(0)
+                .unwrap()
+                .unwrap()
+                .get_value((10, 3))
+                .unwrap()
+                .to_string(),
+            "164"
+        );
+        let mut changed = vec![
+            "xl/worksheets/sheet1.xml",
+            "xl/workbook.xml",
+            "xl/styles.xml",
+        ];
+        if detail {
+            changed.push("xl/worksheets/sheet2.xml");
+        }
+        preserved(&template, &path, &changed);
+    }
 }
 #[test]
 fn negative_recharge_gifts_and_blank_cancellation() {
@@ -382,6 +672,16 @@ fn multiple_receipts_round_each_image_then_accumulate_all_cells() {
             "滴滴加油".into(),
             serde_json::json!({"油品应收金额":30,"油品预收金额":33,"油品优惠合计":3,"油品数量":9}),
         ),
+        (
+            "国通1".into(),
+            serde_json::json!({"订单金额":"300元","退款订单金额":"30元"}),
+        ),
+        (
+            "国通1".into(),
+            serde_json::json!({"订单金额":null,"退款订单金额":null,"交易明细金额合计":"13,307.06"}),
+        ),
+        ("国通2".into(), serde_json::json!({"交易明细金额合计":-3})),
+        ("超市销售收入".into(), serde_json::json!({"现金":"587.70"})),
     ];
     financial_engine::receipts::apply_many(
         &mut output,
@@ -397,6 +697,9 @@ fn multiple_receipts_round_each_image_then_accumulate_all_cells() {
     };
     assert_eq!(number("调价前", "C90"), "0.66"); // round(1/3) + round(1/3), not round(2/3)
     assert_eq!(number("调价前", "E81"), "1.66"); // adds fees from both categories too
+    assert_eq!(number("调价前", "H92"), "4525.69");
+    assert_eq!(number("调价前", "H93"), "-1");
+    assert_eq!(number("调价前", "H71"), "195.9");
     assert_eq!(number("油品优惠明细 2", "AA2"), "0.66");
     assert_eq!(number("油品优惠明细 2", "AB2"), "0.66");
 }

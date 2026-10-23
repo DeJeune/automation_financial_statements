@@ -47,15 +47,52 @@ fn scales(req: &Request) -> Result<(D, D)> {
     }
     Ok((a, b))
 }
+fn simple_statistics(req: &Request) -> Result<(Table, Vec<Table>)> {
+    let read = |category| {
+        load(
+            req,
+            category,
+            &["机号", "油品", "加油升", "加油元", "次数"],
+            &["机号", "加油升", "加油元", "次数"],
+            false,
+        )
+    };
+    let mut parts = vec![read("油品时间统计")?];
+    if req.sources.contains_key("油品时间统计(调价后)") {
+        parts.push(read("油品时间统计(调价后)")?);
+    }
+    let stations: BTreeSet<_> = parts
+        .iter()
+        .filter(|part| !part.stations.is_empty())
+        .map(|part| &part.stations)
+        .collect();
+    if stations.len() > 1 {
+        bail!("源表站号不一致");
+    }
+    let period = if parts.iter().all(|part| part.period.len() == 2) {
+        vec![
+            parts.iter().map(|part| part.period[0]).min().unwrap(),
+            parts.iter().map(|part| part.period[1]).max().unwrap(),
+        ]
+    } else {
+        vec![]
+    };
+    let combined = Table {
+        rows: parts
+            .iter()
+            .flat_map(|part| part.rows.iter().cloned())
+            .collect(),
+        period,
+        stations: stations
+            .first()
+            .map(|stations| (*stations).clone())
+            .unwrap_or_default(),
+    };
+    Ok((combined, parts))
+}
 pub fn simple(req: &Request) -> Result<Report> {
     let (scale, counts) = scales(req)?;
-    let stats = load(
-        req,
-        "油品时间统计",
-        &["机号", "油品", "加油升", "加油元", "次数"],
-        &["机号", "加油升", "加油元", "次数"],
-        false,
-    )?;
+    let (stats, statistics) = simple_statistics(req)?;
     let details = load(
         req,
         "加油明细",
@@ -67,8 +104,16 @@ pub fn simple(req: &Request) -> Result<Report> {
             "结算金额",
             "优惠金额",
             "收款方式",
+            "IC卡余额",
         ],
-        &["单价", "升数", "油机金额", "结算金额", "优惠金额"],
+        &[
+            "单价",
+            "升数",
+            "油机金额",
+            "结算金额",
+            "优惠金额",
+            "IC卡余额",
+        ],
         false,
     )?;
     let recharge = load(
@@ -91,6 +136,7 @@ pub fn simple(req: &Request) -> Result<Report> {
             }
         }
     }
+    let groups = crate::fuel::groups(&statistics, &details)?;
     let mut first = SheetUpdate::default();
     let mut second = SheetUpdate::default();
     put(&mut first, "C2", req.day.into());
@@ -139,24 +185,20 @@ pub fn simple(req: &Request) -> Result<Report> {
                 bail!("{fuel} 优惠不一致：{actual} / {expected}")
             }
         }
-        let prices: BTreeSet<D> = d.iter().map(|r| num(r, "单价")).collect::<Result<_>>()?;
-        if prices.len() > 1 {
-            bail!("{fuel} 存在多个单价，请拆分调价时段")
-        }
-        let mut machines = BTreeMap::<D, D>::new();
-        for r in &s {
-            *machines.entry(num(r, "机号")?).or_default() += num(r, "加油升")?;
-        }
-        let litres: D = machines.values().map(|v| round(*v / scale, 2)).sum();
+        let selected: Vec<_> = groups.iter().filter(|group| group.fuel == *fuel).collect();
+        let litres: D = selected.iter().map(|group| group.litres(scale)).sum();
+        let amount = round(
+            selected
+                .iter()
+                .map(|group| group.litres(scale) * group.price)
+                .sum(),
+            2,
+        );
         first
             .cells
             .insert(format!("A{row}"), Cell::Text(fuel.to_string()));
         put(&mut first, format!("B{row}"), litres);
-        put(
-            &mut first,
-            format!("D{row}"),
-            round(litres * prices.first().copied().unwrap_or_default(), 2),
-        );
+        put(&mut first, format!("D{row}"), amount);
         put(
             &mut first,
             format!("E{row}"),
@@ -216,8 +258,10 @@ pub fn simple(req: &Request) -> Result<Report> {
         .iter()
         .filter(|r| {
             num(r, "优惠金额").is_ok_and(|v| v == D::ZERO)
+                && num(r, "IC卡余额").is_ok_and(|v| v == D::ZERO)
                 && num(r, "结算金额").is_ok_and(|v| v != D::ZERO)
                 && ["92#汽油", "95#汽油"].contains(&text(r, "油品"))
+                && text(r, "收款方式") != "回罐收款"
         })
         .collect();
     put(&mut first, "B13", round(D::from(no_card.len()) / counts, 0));
@@ -310,6 +354,29 @@ pub fn simple(req: &Request) -> Result<Report> {
     })
 }
 
+/// Resolve worksheet positions before writing a station's simple template.
+pub fn simple_for_template(req: &Request, template: &std::path::Path) -> Result<Report> {
+    let (main, detail) = crate::workbook::simple_template_sheets(template)?;
+    let mut report = simple(req)?;
+    let first = report
+        .updates
+        .remove("Sheet1")
+        .context("缺少简表主表数据")?;
+    let second = report
+        .updates
+        .remove("Sheet2")
+        .context("缺少简表明细数据")?;
+    report.updates.insert(main, first);
+    if let Some(detail) = detail {
+        report.updates.insert(detail, second);
+    } else {
+        report
+            .notes
+            .push("已填写第一个工作表；其他页保留原值".into());
+    }
+    Ok(report)
+}
+
 /// Legacy report retains its own mapping and rounding policy.
 pub fn daily(req: &Request, template: &std::path::Path) -> Result<Report> {
     scales(req)?;
@@ -325,66 +392,56 @@ pub fn daily(req: &Request, template: &std::path::Path) -> Result<Report> {
     let mut first = SheetUpdate::default();
     let scale = D::from(3);
     let legacy = |v: D| v.round_dp_with_strategy(2, RoundingStrategy::MidpointNearestEven);
-    for (category, sheet) in [
-        ("油品时间统计", "调价前"),
-        ("油品时间统计(调价后)", "调价后"),
-    ] {
-        if category.ends_with("(调价后)") && !req.sources.contains_key(category) {
+    let (_, statistics) = simple_statistics(req)?;
+    let details = load(
+        req,
+        "加油明细",
+        &["油品", "单价", "结算金额", "收款方式"],
+        &["单价", "结算金额"],
+        false,
+    )?;
+    let groups = crate::fuel::groups(&statistics, &details)?;
+    for (period, sheet) in [(0, "调价前"), (1, "调价后")] {
+        if period == 1 && statistics.len() < 2 {
             continue;
         }
-        let stats = load(
-            req,
-            category,
-            &["机号", "油品", "加油升"],
-            &["机号", "加油升"],
-            false,
-        )?;
         let range = book.worksheet_range(sheet)?;
         let mut out = SheetUpdate::default();
-        for row in &stats.rows {
-            let section = match text(row, "油品") {
+        let mut positions = BTreeMap::new();
+        let mut section = String::new();
+        let (sr, sc) = range.start().unwrap_or_default();
+        for (r, c, cell) in range.used_cells() {
+            let (rr, cc) = (r + sr as usize, c + sc as usize);
+            if cc == 0 && !cell.to_string().is_empty() {
+                section = cell.to_string().trim().to_string();
+            }
+            if rr >= 2
+                && cc == 1
+                && ["A", "B", "C"].contains(&section.as_str())
+                && let Ok(machine) = number(cell.to_string().trim().trim_end_matches('号'))
+            {
+                positions.insert((section.clone(), machine), rr + 1);
+                put(&mut out, format!("D{}", rr + 1), D::ZERO);
+            }
+        }
+        for group in groups.iter().filter(|group| group.period == period) {
+            let section = match group.fuel {
                 "0#柴油" => "A",
                 "92#汽油" => "B",
                 "95#汽油" => "C",
-                f => bail!("未支持的油品：{f}"),
+                _ => unreachable!(),
             };
-            let mut current = String::new();
-            let mut found = false;
-            for ((r, c), cell) in range.used_cells().map(|(r, c, v)| ((r, c), v)) {
-                let (sr, sc) = range.start().unwrap_or_default();
-                let rr = r + sr as usize;
-                let cc = c + sc as usize;
-                if cc == 0 && !cell.to_string().is_empty() {
-                    current = cell.to_string().trim().to_string();
-                }
-                if rr >= 2
-                    && cc == 1
-                    && current == section
-                    && cell.to_string().trim().trim_end_matches('号')
-                        == text(row, "机号").trim_end_matches('号')
-                {
-                    put(
-                        &mut out,
-                        format!("D{}", rr + 1),
-                        legacy(num(row, "加油升")? / scale),
-                    );
-                    found = true;
-                    break;
-                }
-            }
-            if !found {
-                bail!("{sheet} 找不到油枪 {} / {section}", text(row, "机号"))
+            for (machine, litres) in &group.machines {
+                let row = positions
+                    .get(&(section.into(), *machine))
+                    .with_context(|| format!("{sheet} 找不到油枪 {machine} / {section}"))?;
+                put(&mut out, format!("D{row}"), round(*litres / scale, 2));
+                // The source price, rather than a previous day's template value, owns this calculation.
+                put(&mut out, format!("G{row}"), group.price);
             }
         }
         updates.insert(sheet.into(), out);
     }
-    let details = load(
-        req,
-        "加油明细",
-        &["结算金额", "收款方式"],
-        &["结算金额"],
-        false,
-    )?;
     for (method, cell) in [("充值卡收款", "H76"), ("电子卡收款", "H78")] {
         put(
             &mut first,

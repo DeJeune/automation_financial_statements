@@ -616,10 +616,13 @@ export function Workstation(
     }
     const jobs = kinds.map((kind): Job => {
       const allowed =
-        kind === "simple" ? tableCategories.slice(0, 4) : [...tableCategories, ...imageCategories];
+        kind === "simple"
+          ? [...tableCategories.slice(0, 5), "超市销售收入"]
+          : [...tableCategories, ...imageCategories];
       return {
         batchId: batch.id,
         kind,
+        dailyResultId: "",
         template: batch.files()[`${titles[kind]}模板`][0],
         files: Object.entries(batch.files())
           .filter(([k]) => allowed.includes(k))
@@ -667,6 +670,7 @@ export function Workstation(
             if (!alive) break;
             batch.message.set(`正在生成${titles[job.kind]}… 可添加其他加油站继续上传。`);
             try {
+              if (job.kind === "simple") job.dailyResultId = completed.daily?.id || "";
               const result = await (p.prepare || Reports.prepare)(job);
               if (!alive) {
                 Reports.discard(result.id);

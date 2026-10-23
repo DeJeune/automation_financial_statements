@@ -382,15 +382,12 @@ pub fn write(template: &Path, output: &Path, updates: &Updates) -> Result<()> {
     Ok(())
 }
 
-pub fn validate_simple_template(path: &Path) -> Result<()> {
+pub fn simple_template_sheets(path: &Path) -> Result<(String, Option<String>)> {
     use calamine::Reader;
     let mut book = calamine::open_workbook_auto(path)?;
-    let a = book
-        .worksheet_range("Sheet1")
-        .context("请选择 T-CD 简表模板")?;
-    let b = book
-        .worksheet_range("Sheet2")
-        .context("请选择 T-CD 简表模板")?;
+    let names = book.sheet_names();
+    let first = names.first().context("简表模板没有工作表")?.clone();
+    let a = book.worksheet_range_at(0).context("简表模板没有工作表")??;
     let value = |range: &calamine::Range<calamine::Data>, r, c| {
         range
             .get_value((r, c))
@@ -398,11 +395,21 @@ pub fn validate_simple_template(path: &Path) -> Result<()> {
             .unwrap_or_default()
     };
     ensure!(
-        value(&a, 0, 0).contains("数据简表")
-            && value(&a, 12, 0) == "无卡次数"
-            && value(&b, 3, 0) == "油品"
-            && value(&b, 9, 0) == "充值明细",
-        "模板内容不是支持的 T-CD 简表"
+        value(&a, 0, 0).contains("数据简表") && value(&a, 12, 0) == "无卡次数",
+        "第一个工作表不是支持的数据简表"
     );
-    Ok(())
+    // Other station templates have unrelated data on their second worksheet.
+    // Only fill the optional detail page when its layout matches our mapping.
+    let detail = if let Some(range) = book.worksheet_range_at(1) {
+        let range = range?;
+        (value(&range, 3, 0) == "油品" && value(&range, 9, 0) == "充值明细")
+            .then(|| names[1].clone())
+    } else {
+        None
+    };
+    Ok((first, detail))
+}
+
+pub fn validate_simple_template(path: &Path) -> Result<()> {
+    simple_template_sheets(path).map(|_| ())
 }

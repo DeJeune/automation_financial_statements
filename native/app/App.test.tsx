@@ -125,6 +125,24 @@ test("table preview and hover keyboard paste retain the original workflow", asyn
   expect(app.enabled("id:calculate")).toBe(true);
 });
 
+test("simple report merges before and after price statistics through the native processor", async () => {
+  const app = await open("./fixtures/PriceChange.tsx", options);
+  await app.press("id:calculate");
+  await app.waitFor("处理完成，可预览或导出表格。", { timeout: 15000 });
+  expect(app.enabled("导出简表")).toBe(true);
+  await app.press("预览简表");
+  await app.waitFor("text:19");
+  await app.press("关闭预览");
+});
+
+test("simple report receives the supermarket image and the completed daily result", async () => {
+  const app = await open("./fixtures/Supermarket.tsx", options);
+  await app.press("id:calculate");
+  await app.waitFor("处理完成，可预览或导出表格。");
+  expect(app.enabled("导出日报")).toBe(true);
+  expect(app.enabled("导出简表")).toBe(true);
+});
+
 test("independent report failures, previewed calculation and stale-result invalidation", async () => {
   const app = await open("./fixtures/Workflow.tsx", options);
   expect(app.shows("text:已上传 5 个文件 · 还缺：油品优惠（日报）")).toBe(true);

@@ -10,7 +10,7 @@ import openpyxl
 import pytest
 from PySide6.QtWidgets import QApplication, QMessageBox, QFileDialog
 
-from tests.test_simple_report import sources, template
+from tests.test_simple_report import sources, template, price_change_sources
 from src.gui.main_window import MainWindow
 
 
@@ -76,6 +76,37 @@ def test_simple_report_upload_process_and_repeat(tmp_path, monkeypatch, sources,
     window._handle_table_upload(managed_path, 'simple_output_table')
     assert managed_path.exists()
     assert not errors
+    window.close()
+    app.processEvents()
+
+
+def test_simple_report_routes_optional_after_statistics(tmp_path, monkeypatch, template, price_change_sources, shift_config):
+    app = QApplication.instance() or QApplication([])
+    errors = []
+    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: errors.append(args[2]))
+    monkeypatch.setattr(QMessageBox, 'critical', lambda *args: errors.append(args[2]))
+    window = MainWindow()
+    window.shift_config = shift_config
+    for name in ('output_dir', 'table_dir', 'image_dir'):
+        folder = tmp_path / name
+        folder.mkdir()
+        setattr(window, name, folder)
+    window._handle_table_upload(template, 'simple_output_table')
+    for category, path in price_change_sources.items():
+        window._handle_table_upload(path, category)
+    window._process_all_files()
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        app.processEvents()
+        if window.processing_status.get('simple_output_table') == '已填写，待核对保留项' or errors:
+            break
+        time.sleep(0.01)
+    assert not errors
+    assert window.processing_status['simple_output_table'] == '已填写，待核对保留项'
+    assert window.processing_status['油品时间统计(调价后)'] == '完成'
+    wb = openpyxl.load_workbook(window.simple_output_table_path)
+    assert (wb['Sheet1']['B3'].value, wb['Sheet1']['D3'].value, wb['Sheet1']['E3'].value) == (20, 170, 1)
+    wb.close()
     window.close()
     app.processEvents()
 

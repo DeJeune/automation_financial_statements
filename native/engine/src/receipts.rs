@@ -18,7 +18,7 @@ pub fn fields(category: &str) -> Result<Vec<&'static str>> {
     Ok(match category {
         "货车帮" => vec!["柴油统计", "油站折扣", "油站直降", "服务费", "结算金额"],
         "滴滴加油" => vec!["油品应收金额", "油品预收金额", "油品优惠合计", "油品数量"],
-        "国通1" | "国通2" => vec!["订单金额", "退款订单金额"],
+        "国通1" | "国通2" => vec!["订单金额", "退款订单金额", "交易明细金额合计"],
         "团油" => vec![
             "加油升数汇总",
             "加油金额汇总",
@@ -43,6 +43,40 @@ pub fn parse(value: &serde_json::Value) -> Result<D> {
     let matches: Vec<_> = re.find_iter(&cleaned).collect();
     ensure!(matches.len() == 1, "识别字段没有唯一数值：{value}");
     number(matches[0].as_str())
+}
+/// Guotong accepts either an order/refund summary or a transaction table total.
+/// Partial summaries still fail rather than silently treating a missing refund as zero.
+pub fn parse_fields(category: &str, data: &serde_json::Value) -> Result<BTreeMap<&'static str, D>> {
+    let fields = fields(category)?;
+    let read = |key| parse(&data[key]).with_context(|| format!("{category} / {key}"));
+    if matches!(category, "国通1" | "国通2") {
+        let amount = if data["订单金额"].is_null() && data["退款订单金额"].is_null() {
+            read("交易明细金额合计")?
+        } else {
+            read("订单金额")? - read("退款订单金额")?
+        };
+        Ok(BTreeMap::from([("交易明细金额合计", amount)]))
+    } else {
+        fields
+            .into_iter()
+            .map(|key| Ok((key, read(key)?)))
+            .collect()
+    }
+}
+fn rounded(amount: D) -> D {
+    (amount / D::from(3)).round_dp_with_strategy(2, RoundingStrategy::MidpointNearestEven)
+}
+
+/// Match the daily report: round each supermarket image before adding them.
+pub fn supermarket_total(recognized: &[serde_json::Value]) -> Result<Option<Cell>> {
+    if recognized.is_empty() {
+        return Ok(None);
+    }
+    let amount = recognized.iter().try_fold(D::ZERO, |total, data| {
+        let values = parse_fields("超市销售收入", data)?;
+        Ok::<_, anyhow::Error>(total + rounded(values["现金"]))
+    })?;
+    Ok(Some(Cell::Number(amount.normalize().to_string())))
 }
 pub fn apply(
     report: &mut Report,
@@ -86,16 +120,8 @@ pub fn apply_many(
         .map(|(r, _, _)| r + start.0 as usize + 1)
         .context("优惠表找不到日期")?;
     let mut updates = BTreeMap::<(String, String), D>::new();
-    let rounded =
-        |v: D| (v / D::from(3)).round_dp_with_strategy(2, RoundingStrategy::MidpointNearestEven);
     for (category, data) in recognized {
-        let mut values = BTreeMap::new();
-        for key in fields(category)? {
-            values.insert(
-                key,
-                parse(&data[key]).with_context(|| format!("{category} / {key}"))?,
-            );
-        }
+        let values = parse_fields(category, data)?;
         let v = |key: &str| values[key];
         let mut first = vec![];
         let mut second = vec![];
@@ -113,7 +139,7 @@ pub fn apply_many(
             }
             "国通1" | "国通2" => first.push((
                 if category == "国通1" { "H92" } else { "H93" },
-                v("订单金额") - v("退款订单金额"),
+                v("交易明细金额合计"),
             )),
             "团油" => {
                 first.extend([("E81", v("通道费汇总")), ("C89", v("实际结算金额汇总"))]);
@@ -161,4 +187,58 @@ pub fn apply_many(
             .insert(address, Cell::Number(amount.normalize().to_string()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn supermarket_totals_keep_daily_rounding_and_distinguish_missing_from_zero() {
+        assert!(supermarket_total(&[]).unwrap().is_none());
+        for (data, expected) in [
+            (vec![json!({"现金":"587.70元"})], "195.9"),
+            (vec![json!({"现金":1}), json!({"现金":1})], "0.66"),
+            (
+                vec![json!({"现金":"0.015"}), json!({"现金":"0.045"})],
+                "0.02",
+            ),
+            (vec![json!({"现金":0})], "0"),
+        ] {
+            assert!(
+                matches!(supermarket_total(&data).unwrap(), Some(Cell::Number(n)) if n == expected)
+            );
+        }
+        assert!(supermarket_total(&[json!({"现金":null})]).is_err());
+    }
+
+    #[test]
+    fn guotong_accepts_table_totals_and_preserves_summary_validation() {
+        for category in ["国通1", "国通2"] {
+            for (data, expected) in [
+                (json!({"订单金额":"300元","退款订单金额":"30元"}), "270"),
+                (json!({"订单金额":300,"退款订单金额":0}), "300"),
+                (
+                    json!({"订单金额":null,"退款订单金额":null,"交易明细金额合计":"13,307.06"}),
+                    "13307.06",
+                ),
+                (json!({"交易明细金额合计":0}), "0"),
+            ] {
+                assert_eq!(
+                    parse_fields(category, &data).unwrap()["交易明细金额合计"],
+                    number(expected).unwrap()
+                );
+            }
+            for data in [
+                json!({}),
+                json!({"订单金额":300,"退款订单金额":null}),
+                json!({"订单金额":300,"退款订单金额":null,"交易明细金额合计":300}),
+                json!({"交易明细金额合计":"无法识别"}),
+            ] {
+                assert!(parse_fields(category, &data).is_err());
+            }
+        }
+        assert!(parse_fields("POS", &json!({"结算总金额":null})).is_err());
+    }
 }

@@ -9,7 +9,7 @@ import pandas as pd
 from src.config.shift_config import ShiftConfig
 from src.processors.source_tables import numeric, read_discounts, read_source
 
-SIMPLE_CATEGORIES = ('油品时间统计', '油品优惠', '加油明细', '充值明细')
+SIMPLE_CATEGORIES = ('油品时间统计', '油品优惠', '加油明细', '充值明细', '油品时间统计(调价后)')
 SIMPLE_REQUIRED_CATEGORIES = ('油品时间统计', '加油明细', '充值明细')
 FUEL_ROWS = {'0#柴油': 3, '92#汽油': 4, '95#汽油': 5}
 
@@ -60,18 +60,25 @@ class SimpleReportProcessor:
         missing = set(SIMPLE_REQUIRED_CATEGORIES) - paths.keys()
         if missing:
             raise ValueError(f'缺少源表：{"、".join(sorted(missing))}')
-        stats = numeric(read_source(paths['油品时间统计'],
+        statistics = [numeric(read_source(paths[category],
             ['机号', '油品', '加油升', '加油元', '次数']), ['机号', '加油升', '加油元', '次数'])
+            for category in ('油品时间统计', '油品时间统计(调价后)') if category in paths]
+        self._check_stations(*statistics)
+        stats = pd.concat(statistics, ignore_index=True)
+        stats.attrs.clear()
+        if all('period' in part.attrs for part in statistics):
+            stats.attrs['period'] = (min(part.attrs['period'][0] for part in statistics),
+                                     max(part.attrs['period'][1] for part in statistics))
         details = numeric(read_source(paths['加油明细'],
-            ['油品', '单价', '升数', '油机金额', '结算金额', '优惠金额', '收款方式']),
-            ['单价', '升数', '油机金额', '结算金额', '优惠金额'])
+            ['油品', '单价', '升数', '油机金额', '结算金额', '优惠金额', '收款方式', 'IC卡余额']),
+            ['单价', '升数', '油机金额', '结算金额', '优惠金额', 'IC卡余额'])
         discounts = read_discounts(paths['油品优惠']) if '油品优惠' in paths else None
         recharge = numeric(read_source(paths['充值明细'],
             ['原余额', '充值金额', '充值赠送', '付款方式']), ['原余额', '充值金额', '充值赠送'])
         self._check_periods(stats, details, recharge)
         self._check_fuels(stats, details, discounts)
         self._reconcile(stats, details, discounts)
-        first, second = self._fuel_cells(stats, details)
+        first, second = self._fuel_cells(stats, details, statistics)
         if discounts is not None:
             self._discount_cells(discounts, second)
         self._consumption_cells(details, first)
@@ -91,9 +98,10 @@ class SimpleReportProcessor:
                 '原始升数': round(float(stats['加油升'].sum()), 2),
                 '原始油机金额': round(float(stats['加油元'].sum()), 2),
                 '原始次数': int(stats['次数'].sum()),
+                '时间统计': '已合并调价前、调价后统计' if len(statistics) > 1 else '使用调价前统计',
                 '交叉校验': ('逐油品升数、油机金额、次数和优惠一致' if discounts is not None
                          else '逐油品升数、油机金额、次数一致；未提供优惠表，优惠栏保留原值'),
-                '消费口径': 'D11=充值卡、电子卡结算金额分别折算取两位后相加；D12=电子卡结算金额；D13=无卡筛选后的结算金额。',
+                '消费口径': 'D11=充值卡、电子卡结算金额分别折算取两位后相加；D12=电子卡结算金额；D13=优惠金额及IC卡余额为零、结算非零的92/95汽油结算金额，排除回罐收款。',
                 '充值口径': 'D8/D9=原余额为零/非零的现金、微信、支付宝充值金额含赠送，保留负数；B12=微信/支付宝充值本金。',
                 '次数口径': '油品次数、无卡次数折算后取整数；新次数只计原余额为零且有上述付款方式的记录；旧次数计全部明细（含开户、撤单），折算取两位。',
                 '余额': ('期末余额合计已折算填入 G7' if self.closing_balance is not None
@@ -108,6 +116,10 @@ class SimpleReportProcessor:
         periods = {frame.attrs['period'] for frame in frames if 'period' in frame.attrs}
         if len(periods) > 1:
             raise ValueError('源表导出时段不一致，请选择同一时段的数据')
+        SimpleReportProcessor._check_stations(*frames)
+
+    @staticmethod
+    def _check_stations(*frames: pd.DataFrame) -> None:
         stations = []
         for frame in frames:
             if '站号' in frame:
@@ -144,23 +156,23 @@ class SimpleReportProcessor:
                 if abs(actual - expected) > tolerance:
                     raise ValueError(f'{fuel} {metric}不一致：{actual:.2f} / {expected:.2f}，请核对源表时段和站点')
 
-    def _fuel_cells(self, stats, details) -> tuple[dict, dict]:
+    def _fuel_cells(self, stats, details, statistics) -> tuple[dict, dict]:
         """Restore live averages in both sheets, including zero-sales days."""
         first = {'C2': self.config.date.day}
         second = {}
         for fuel, row in FUEL_ROWS.items():
             source = stats.loc[stats['油品'] == fuel]
-            prices = details.loc[details['油品'] == fuel, '单价'].unique()
-            if len(prices) > 1:
-                raise ValueError(f'{fuel} 存在多个单价，当前简表按固定单价计算，请拆分调价时段')
-            price = Decimal(str(prices[0])) if len(prices) else Decimal(0)
-            # Round each machine's scaled litres before summing, then apply its fuel price.
-            litres = total(rounded(total(group['加油升']) / self.money_scale)
-                           for _, group in source.groupby('机号'))
+            litres = Decimal(0)
+            amount = Decimal(0)
+            for part, price in self._priced_statistics(fuel, source, details, statistics):
+                quantity = total(rounded(total(group['加油升']) / self.money_scale)
+                                 for _, group in part.groupby('机号'))
+                litres += quantity
+                amount += quantity * price
             first.update({
                 f'A{row}': fuel,
                 f'B{row}': float(litres),
-                f'D{row}': rounded(litres * price),
+                f'D{row}': rounded(amount),
                 f'E{row}': rounded(total(source['次数']) / self.count_scale, 0),
                 f'C{row}': f'=IF(B6=0,0,B{row}/B6)',
                 f'F{row}': f'=IF(E{row}=0,0,D{row}/E{row})',
@@ -169,6 +181,45 @@ class SimpleReportProcessor:
         first['F6'] = '=IF(E6=0,0,D6/E6)'
         first['F13'] = '=IF(SUM(D4:D5)=0,0,D13/SUM(D4:D5))'
         return first, second
+
+    @staticmethod
+    def _priced_statistics(fuel, source, details, statistics):
+        """Combine equal-price exports; split only at a verified price change."""
+        detail = details.loc[details['油品'] == fuel]
+        prices = detail['单价'].unique()
+        if len(prices) <= 1:
+            if not len(prices) and total(source['加油升']) != 0:
+                raise ValueError(f'{fuel} 缺少加油明细单价')
+            return [(source, Decimal(str(prices[0])) if len(prices) else Decimal(0))]
+        if len(statistics) < 2:
+            raise ValueError(f'{fuel} 存在多个单价，请提供调价后统计')
+        if '加油完成时间' not in detail:
+            raise ValueError(f'{fuel} 调价计算需要有效的加油完成时间')
+        times = pd.to_datetime(detail['加油完成时间'], errors='coerce')
+        if times.isna().any():
+            raise ValueError(f'{fuel} 调价计算需要有效的加油完成时间')
+        result = []
+        for part in statistics:
+            period = part.attrs.get('period', ())
+            if len(period) != 2 or period[0] >= period[1]:
+                raise ValueError(f'{fuel} 调价计算需要各段统计的完整时段')
+            exclusive = any(other.attrs.get('period', (None,))[0] == period[1]
+                            for other in statistics)
+            mask = ((times >= period[0])
+                    & ((times < period[1]) if exclusive else (times <= period[1])))
+            selected = detail.loc[mask]
+            rows = part.loc[part['油品'] == fuel]
+            if abs(total(rows['加油升']) - total(selected['升数'])) > Decimal('.011'):
+                raise ValueError(f'{fuel} 调价时段升数不一致')
+            prices = selected['单价'].unique()
+            if len(prices) > 1:
+                raise ValueError(f'{fuel} 同一统计时段存在多个单价，请按实际调价时间拆分统计')
+            if rows.empty:
+                continue
+            if not len(prices):
+                raise ValueError(f'{fuel} 调价时段缺少加油明细单价')
+            result.append((rows, Decimal(str(prices[0]))))
+        return result
 
     def _discount_cells(self, discounts, cells) -> None:
         """Use the discount export's complete reduction, including its coupon component."""
@@ -186,7 +237,9 @@ class SimpleReportProcessor:
         cells['D11'] = float(total(card_totals))
         cells['D12'] = card_totals[1]
         no_card = details.loc[(details['优惠金额'] == 0) & (details['结算金额'] != 0)
-                              & details['油品'].isin(['92#汽油', '95#汽油'])]
+                              & (details['IC卡余额'] == 0)
+                              & details['油品'].isin(['92#汽油', '95#汽油'])
+                              & (details['收款方式'] != '回罐收款')]
         cells['B13'] = rounded(Decimal(len(no_card)) / self.count_scale, 0)
         cells['D13'] = rounded(total(no_card['结算金额']) / self.money_scale)
         cells.update(F11='=IF(D6=0,0,D11/D6)', F12='=IF(D6=0,0,D12/D6)')

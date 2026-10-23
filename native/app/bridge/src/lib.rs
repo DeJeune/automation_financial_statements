@@ -27,6 +27,7 @@ pub struct Job {
     pub files: Vec<InputFile>,
     pub template: String,
     pub kind: String,
+    pub daily_result_id: String,
     pub date: String,
     pub work_start: String,
     pub shift_time: String,
@@ -53,6 +54,8 @@ pub struct Prepared {
 }
 struct Snapshot {
     batch_id: String,
+    kind: String,
+    supermarket_files: Vec<String>,
     directory: tempfile::TempDir,
     report: Report,
     protected: Vec<PathBuf>,
@@ -91,6 +94,98 @@ fn path(value: &str) -> Result<PathBuf> {
         Ok(value.into())
     }
 }
+fn supermarket_files(job: &Job) -> Vec<String> {
+    job.files
+        .iter()
+        .filter(|file| file.category == "超市销售收入")
+        .map(|file| file.path.clone())
+        .collect()
+}
+
+fn daily_supermarket(job: &Job) -> Result<Option<Cell>> {
+    if job.daily_result_id.is_empty() || supermarket_files(job).is_empty() {
+        return Ok(None);
+    }
+    let all = snapshots()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("任务状态不可用"))?;
+    let daily = all
+        .get(&job.daily_result_id)
+        .context("日报结果已失效，请重新处理")?;
+    anyhow::ensure!(
+        daily.kind == "daily" && daily.batch_id == job.batch_id,
+        "超市金额必须来自当前加油站的日报结果"
+    );
+    anyhow::ensure!(
+        daily.supermarket_files == supermarket_files(job),
+        "超市截图已变化，请重新处理"
+    );
+    daily
+        .report
+        .updates
+        .get("调价前")
+        .and_then(|sheet| sheet.cells.get("H71"))
+        .cloned()
+        .map(Some)
+        .context("日报结果没有超市金额，请重新处理")
+}
+
+fn recognize_images(job: &Job) -> Result<Vec<(String, serde_json::Value)>> {
+    let mut recognized = Vec::new();
+    for file in &job.files {
+        if !financial_engine::receipts::CATEGORIES.contains(&file.category.as_str())
+            || (job.kind == "simple" && file.category != "超市销售收入")
+        {
+            continue;
+        }
+        if !recognized.is_empty() {
+            std::thread::sleep(std::time::Duration::from_secs(6));
+        }
+        runtime::progress(
+            &job.batch_id,
+            &file.category,
+            &file.path,
+            "识别中",
+            "正在读取截图",
+        );
+        let data = match recognition::recognize(
+            &file.category,
+            &path(&file.path)?,
+            &job.api_base,
+            &job.api_key,
+            &job.model,
+        ) {
+            Ok(data) => data,
+            Err(e) => {
+                runtime::progress(
+                    &job.batch_id,
+                    &file.category,
+                    &file.path,
+                    "失败",
+                    format!("{e:#}"),
+                );
+                return Err(e);
+            }
+        };
+        let detail = financial_engine::receipts::fields(&file.category)?
+            .iter()
+            .map(|key| {
+                format!(
+                    "{key}: {}",
+                    data[*key]
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| data[*key].to_string())
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("；");
+        runtime::progress(&job.batch_id, &file.category, &file.path, "完成", detail);
+        recognized.push((file.category.clone(), data));
+    }
+    Ok(recognized)
+}
+
 fn prepare(job: Job) -> Result<Prepared> {
     use chrono::Datelike;
     let date = chrono::NaiveDate::parse_from_str(&job.date, "%Y-%m-%d")
@@ -152,70 +247,41 @@ fn prepare(job: Job) -> Result<Prepared> {
             .map(|f| Ok((f.category.clone(), path(&f.path)?)))
             .collect::<Result<_>>()?,
         day,
-        divisor: job.divisor,
-        count_divisor: job.count_divisor,
-        closing_balance: job.balance,
+        divisor: job.divisor.clone(),
+        count_divisor: job.count_divisor.clone(),
+        closing_balance: job.balance.clone(),
     };
     let mut report = match job.kind.as_str() {
-        "simple" => report::simple(&req)?,
+        "simple" => report::simple_for_template(&req, &template)?,
         "daily" => report::daily(&req, &template)?,
         _ => anyhow::bail!("未知报表"),
     };
     if job.kind == "daily" {
-        let mut recognized = Vec::new();
-        for file in &job.files {
-            if !financial_engine::receipts::CATEGORIES.contains(&file.category.as_str()) {
-                continue;
-            }
-            if !recognized.is_empty() {
-                std::thread::sleep(std::time::Duration::from_secs(6));
-            }
-            runtime::progress(
-                &job.batch_id,
-                &file.category,
-                &file.path,
-                "识别中",
-                "正在读取截图",
-            );
-            let data = match recognition::recognize(
-                &file.category,
-                &path(&file.path)?,
-                &job.api_base,
-                &job.api_key,
-                &job.model,
-            ) {
-                Ok(data) => data,
-                Err(e) => {
-                    runtime::progress(
-                        &job.batch_id,
-                        &file.category,
-                        &file.path,
-                        "失败",
-                        format!("{e:#}"),
-                    );
-                    return Err(e);
-                }
-            };
-            let detail = financial_engine::receipts::fields(&file.category)?
-                .iter()
-                .map(|key| {
-                    format!(
-                        "{key}: {}",
-                        data[*key]
-                            .as_str()
-                            .map(str::to_owned)
-                            .unwrap_or_else(|| data[*key].to_string())
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("；");
-            runtime::progress(&job.batch_id, &file.category, &file.path, "完成", detail);
-            recognized.push((file.category.clone(), data));
-        }
+        let recognized = recognize_images(&job)?;
         financial_engine::receipts::apply_many(&mut report, &template, day, price, &recognized)?;
-    }
-    if job.kind == "simple" {
-        workbook::validate_simple_template(&template)?;
+    } else {
+        let amount = match daily_supermarket(&job)? {
+            Some(amount) => Some(amount),
+            None => {
+                let recognized = recognize_images(&job)?
+                    .into_iter()
+                    .map(|(_, data)| data)
+                    .collect::<Vec<_>>();
+                financial_engine::receipts::supermarket_total(&recognized)?
+            }
+        };
+        if let Some(amount) = amount {
+            let (main, _) = workbook::simple_template_sheets(&template)?;
+            report
+                .updates
+                .get_mut(&main)
+                .context("缺少简表主表数据")?
+                .cells
+                .insert("B11".into(), amount);
+            report
+                .notes
+                .push("超市销售收入：已按日报金额填写 B11".into());
+        }
     }
     let protected = std::iter::once(&template)
         .chain(req.sources.values())
@@ -273,7 +339,7 @@ fn prepare(job: Job) -> Result<Prepared> {
     let id = NEXT.fetch_add(1, Ordering::Relaxed).to_string();
     let result = Prepared {
         id: id.clone(),
-        kind: job.kind,
+        kind: job.kind.clone(),
         cells,
         notes: report.notes.clone(),
     };
@@ -283,7 +349,9 @@ fn prepare(job: Job) -> Result<Prepared> {
         .insert(
             id,
             Snapshot {
-                batch_id: job.batch_id,
+                batch_id: job.batch_id.clone(),
+                kind: job.kind.clone(),
+                supermarket_files: supermarket_files(&job),
                 directory,
                 report,
                 protected,
@@ -579,6 +647,7 @@ mod tests {
         Job {
             batch_id: "test-snapshot".into(),
             kind: "simple".into(),
+            daily_result_id: String::new(),
             template: root.join("simple.xlsx").to_string_lossy().into_owned(),
             files: vec![
                 ("油品时间统计", "stats.csv"),
@@ -602,6 +671,231 @@ mod tests {
             api_base: String::new(),
             model: String::new(),
         }
+    }
+
+    fn supermarket_provider(cash: serde_json::Value) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let server = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "expected an OCR request"
+                        );
+                        std::thread::sleep(std::time::Duration::from_millis(2));
+                    }
+                    Err(error) => panic!("{error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut bytes = vec![];
+            let mut chunk = [0u8; 4096];
+            loop {
+                let n = stream.read(&mut chunk).unwrap();
+                assert!(n > 0);
+                bytes.extend_from_slice(&chunk[..n]);
+                if let Some(end) = bytes.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let length: usize = String::from_utf8_lossy(&bytes[..end])
+                        .lines()
+                        .find_map(|line| {
+                            line.to_lowercase()
+                                .strip_prefix("content-length: ")
+                                .and_then(|n| n.parse().ok())
+                        })
+                        .unwrap();
+                    if bytes.len() >= end + 4 + length {
+                        break;
+                    }
+                }
+            }
+            let raw = String::from_utf8(bytes).unwrap();
+            assert!(raw.contains("班次交款"));
+            let data = serde_json::json!({"现金":cash}).to_string();
+            let body = serde_json::json!({"candidates":[{"content":{"parts":[{"text":data}]}}]})
+                .to_string();
+            write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+        });
+        (format!("http://{address}"), server)
+    }
+
+    fn add_supermarket(job: &mut Job, fixture: &std::path::Path) {
+        job.files.push(InputFile {
+            category: "超市销售收入".into(),
+            path: fixture.join("receipt.png").to_string_lossy().into_owned(),
+        });
+        job.api_key = "test-key".into();
+        job.model = "test-model".into();
+    }
+
+    #[test]
+    fn supermarket_cash_reaches_simple_without_a_daily_template_including_zero() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures");
+        for (cash, expected) in [
+            (serde_json::json!("587.70"), "195.9"),
+            (serde_json::json!(0), "0"),
+        ] {
+            let mut request = job(&fixture);
+            request.batch_id = format!("supermarket-only-{expected}");
+            add_supermarket(&mut request, &fixture);
+            let (base, server) = supermarket_provider(cash);
+            request.api_base = base;
+            // Other daily receipts never enter the simple report's OCR request.
+            request.files.push(InputFile {
+                category: "国通1".into(),
+                path: "/missing/ignored.png".into(),
+            });
+            let prepared = prepare(request).unwrap();
+            server.join().unwrap();
+            let cell = prepared
+                .cells
+                .iter()
+                .find(|cell| cell.address == "B11")
+                .unwrap();
+            assert_eq!(cell.sheet, "Sheet1");
+            assert_eq!(cell.value, expected);
+            let output = tempfile::tempdir().unwrap();
+            let path = output.path().join("simple.xlsx");
+            write_snapshot(&prepared.id, &path).unwrap();
+            let mut book = calamine::open_workbook_auto(path).unwrap();
+            assert_eq!(
+                book.worksheet_range_at(0)
+                    .unwrap()
+                    .unwrap()
+                    .get_value((10, 1))
+                    .unwrap()
+                    .to_string(),
+                expected
+            );
+            Reports::discard(prepared.id);
+        }
+    }
+
+    #[test]
+    fn simple_reuses_the_daily_supermarket_value_without_another_request_or_division() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures");
+        let mut daily = job(&fixture);
+        daily.batch_id = "supermarket-daily-reuse".into();
+        daily.kind = "daily".into();
+        daily.template = fixture.join("daily.xlsx").to_string_lossy().into_owned();
+        daily.files.push(InputFile {
+            category: "油品优惠".into(),
+            path: fixture.join("discounts.csv").to_string_lossy().into_owned(),
+        });
+        add_supermarket(&mut daily, &fixture);
+        let (base, server) = supermarket_provider(serde_json::json!("587.70"));
+        daily.api_base = base;
+        let result = prepare(daily.clone()).unwrap();
+        server.join().unwrap(); // exactly one provider request; it is now offline
+        assert_eq!(
+            result
+                .cells
+                .iter()
+                .find(|cell| cell.address == "H71")
+                .unwrap()
+                .value,
+            "195.9"
+        );
+        let mut simple = daily;
+        simple.kind = "simple".into();
+        simple.template = fixture.join("simple.xlsx").to_string_lossy().into_owned();
+        simple.daily_result_id = result.id.clone();
+        simple.api_key.clear(); // reuse works without a second OCR request
+        simple.divisor = "6".into(); // the already-rounded daily amount must stay the same
+        for _ in 0..2 {
+            let result = prepare(simple.clone()).unwrap();
+            assert_eq!(
+                result
+                    .cells
+                    .iter()
+                    .find(|cell| cell.address == "B11")
+                    .unwrap()
+                    .value,
+                "195.9"
+            );
+            Reports::discard(result.id);
+        }
+        let mut wrong = simple.clone();
+        wrong.batch_id = "other-station".into();
+        assert!(
+            prepare(wrong)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("当前加油站")
+        );
+        let mut wrong = simple.clone();
+        wrong
+            .files
+            .iter_mut()
+            .find(|file| file.category == "超市销售收入")
+            .unwrap()
+            .path
+            .push_str(".changed");
+        assert!(
+            prepare(wrong)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("截图已变化")
+        );
+        Reports::discard(result.id);
+        assert!(
+            prepare(simple)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("日报结果已失效")
+        );
+    }
+
+    #[test]
+    fn missing_supermarket_preserves_b11_but_unreadable_cash_fails() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures");
+        let temp = tempfile::tempdir().unwrap();
+        let template = temp.path().join("simple.xlsx");
+        let mut update = financial_engine::SheetUpdate::default();
+        update
+            .cells
+            .insert("B11".into(), Cell::Number("123".into()));
+        workbook::write(
+            &fixture.join("simple.xlsx"),
+            &template,
+            &BTreeMap::from([("Sheet1".into(), update)]),
+        )
+        .unwrap();
+        let mut request = job(&fixture);
+        request.batch_id = "supermarket-preserve".into();
+        request.template = template.to_string_lossy().into_owned();
+        let result = prepare(request.clone()).unwrap();
+        assert!(!result.cells.iter().any(|cell| cell.address == "B11"));
+        let output = temp.path().join("export.xlsx");
+        write_snapshot(&result.id, &output).unwrap();
+        let mut book = calamine::open_workbook_auto(output).unwrap();
+        assert_eq!(
+            book.worksheet_range_at(0)
+                .unwrap()
+                .unwrap()
+                .get_value((10, 1))
+                .unwrap()
+                .to_string(),
+            "123"
+        );
+        Reports::discard(result.id);
+        add_supermarket(&mut request, &fixture);
+        let (base, server) = supermarket_provider(serde_json::Value::Null);
+        request.api_base = base;
+        let error = prepare(request).err().unwrap();
+        assert!(format!("{error:#}").contains("未识别"));
+        server.join().unwrap();
     }
     #[cfg(target_os = "macos")]
     #[test]

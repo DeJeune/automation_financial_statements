@@ -1,3 +1,4 @@
+mod fuel;
 pub mod report;
 pub mod source;
 pub mod workbook;

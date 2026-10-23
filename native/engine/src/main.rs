@@ -8,7 +8,10 @@ fn main() -> Result<()> {
     }
     let req: Request = serde_json::from_str(&fs::read_to_string(&args[2])?)?;
     let result = match args[1].as_str() {
-        "simple" => report::simple(&req)?,
+        "simple" => match args.get(3) {
+            Some(template) => report::simple_for_template(&req, Path::new(template))?,
+            None => report::simple(&req)?,
+        },
         "daily" => report::daily(&req, Path::new(args.get(3).context("日报需要模板")?))?,
         _ => bail!("未知报表类型"),
     };
