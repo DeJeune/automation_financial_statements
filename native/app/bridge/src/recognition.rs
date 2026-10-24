@@ -69,6 +69,9 @@ pub fn recognize(
     if matches!(category, "国通1" | "国通2") {
         prompt.push_str("国通有两种表：订单汇总表提取订单金额和退款订单金额，交易明细金额合计返回 null；交易流水表（或金额列底部有合计的 Excel 表格）只读取金额列末行合计到交易明细金额合计，订单金额和退款订单金额均返回 null。不要把明细金额合计填入订单金额。不能自行加总、推算退款或把缺失字段当作 0；无法确认合计时返回 null。");
     }
+    if category == "新系统卡余额" {
+        prompt.push_str("这是充值余额查询表。只读取底部统计或合计行的「期末余额」列总额。不要读取期初余额、本期充值、本期赠送、本期加油或消费次数，也不要对可见明细逐行求和。总额缺失、被截断或无法确认列对应关系时返回 null。金额保留原值，不折算。");
+    }
     let body = json!({"contents":[{"role":"user","parts":[{"text":prompt},{"inlineData":{"mimeType":mime,"data":STANDARD.encode(bytes)}}]}],"generationConfig":{"temperature":0,"maxOutputTokens":5000,"responseMimeType":"application/json","responseSchema":{"type":"OBJECT","properties":properties,"required":fields}}});
     let client = reqwest::blocking::Client::builder()
         .timeout(Duration::from_secs(90))

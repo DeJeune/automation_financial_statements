@@ -84,13 +84,13 @@ class SimpleReportProcessor:
         self._consumption_cells(details, first)
         self._recharge_cells(recharge, first)
         if self.closing_balance is not None:
-            first['G7'] = self.closing_balance
+            first['G8'] = self.closing_balance
         return {
             'updates': [
                 {'sheet': 'Sheet1', 'cells': first,
                  'number_formats': {**{f'E{row}': '0' for row in range(3, 7)},
                                     'B8': '0.00', 'B9': '0.00', 'B13': '0',
-                                    **({'G7': '0.00'} if self.closing_balance is not None else {})}},
+                                    **({'G8': '0.00'} if self.closing_balance is not None else {})}},
                 {'sheet': 'Sheet2', 'cells': second},
             ],
             'processed_data': {
@@ -104,8 +104,8 @@ class SimpleReportProcessor:
                 '消费口径': 'D11=充值卡、电子卡结算金额分别折算取两位后相加；D12=电子卡结算金额；D13=优惠金额为零、结算非零的92/95汽油实收金额，不筛选余额，排除回罐收款。',
                 '充值口径': 'D8/D9=原余额为零/非零的现金、微信、支付宝充值金额含赠送，保留负数；B12=与日报相同的微信/支付宝充值金额加赠送。',
                 '次数口径': '油品次数、无卡次数折算后取整数；新次数只计原余额为零且有上述付款方式的记录；旧次数计全部明细（含开户、撤单），折算取两位。',
-                '余额': ('期末余额合计已折算填入 G7' if self.closing_balance is not None
-                       else '未输入截图期末余额合计，G7 保留原值'),
+                '余额': ('新系统卡期末余额合计已折算填入 G8' if self.closing_balance is not None
+                       else '未输入新系统卡期末余额合计，G8 保留原值'),
                 '待核对': '未说明字段不计算、不覆盖：新会、积分、洗车、超市、充值面额明细及汽柴油充值分类、平台优惠等均保留模板原值。',
             },
         }

@@ -314,10 +314,10 @@ pub fn simple(req: &Request) -> Result<Report> {
     if !req.closing_balance.trim().is_empty() {
         put(
             &mut first,
-            "G7",
+            "G8",
             round(number(&req.closing_balance)? / scale, 2),
         );
-        first.formats.insert("G7".into(), 2);
+        first.formats.insert("G8".into(), 2);
     }
     if let Some(discounts) = discount {
         for (fuels, cell) in [(vec!["92#汽油", "95#汽油"], "D31"), (vec!["0#柴油"], "D34")] {

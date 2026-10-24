@@ -14,12 +14,16 @@ mount(() => (
       充值明细: ["native/app/fixtures/recharge.csv"],
       超市销售收入: ["native/app/fixtures/receipt.png"],
       POS: ["native/app/fixtures/receipt.png"],
+      新系统卡余额: ["native/app/fixtures/receipt.png"],
     }}
     prepare={async (job) => {
+      if (job.kind === "daily" && job.files.some((file) => file.category === "新系统卡余额"))
+        throw new Error("新系统卡余额不应进入日报识别");
       if (job.kind === "simple") {
         if (
           job.dailyResultId !== "daily-supermarket" ||
           job.files.filter((file) => file.category === "超市销售收入").length !== 1 ||
+          job.files.filter((file) => file.category === "新系统卡余额").length !== 1 ||
           job.files.some((file) => file.category === "POS")
         )
           throw new Error("简表没有收到本次日报结果和超市截图");

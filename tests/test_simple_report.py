@@ -415,9 +415,9 @@ def test_multiple_fuel_prices_require_split_period(sources, shift_config):
 @pytest.mark.parametrize('value,expected', [('608377.84', 202792.61), ('0', 0), ('', None)])
 def test_only_requested_balance_cell(sources, shift_config, value, expected):
     first = SimpleReportProcessor(shift_config, closing_balance=value).build_updates(sources)['updates'][0]['cells']
-    assert first.get('G7') == expected
-    assert ('G7' in first) == (expected is not None)
-    assert all(cell not in first for cell in ['G8', 'H8', 'I8', 'J8', 'B10', 'D10'])
+    assert first.get('G8') == expected
+    assert ('G8' in first) == (expected is not None)
+    assert all(cell not in first for cell in ['G7', 'H8', 'I8', 'J8', 'B10', 'D10'])
 
 
 @pytest.mark.parametrize('value', ['NaN', 'Infinity', 'bad'])

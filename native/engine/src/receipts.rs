@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail, ensure};
 use calamine::Reader;
 use rust_decimal::{Decimal as D, RoundingStrategy};
 use std::{collections::BTreeMap, path::Path};
-pub const CATEGORIES: [&str; 8] = [
+pub const CATEGORIES: [&str; 9] = [
     "货车帮",
     "滴滴加油",
     "国通1",
@@ -13,6 +13,7 @@ pub const CATEGORIES: [&str; 8] = [
     "POS",
     "超市销售收入",
     "抖音",
+    "新系统卡余额",
 ];
 pub fn fields(category: &str) -> Result<Vec<&'static str>> {
     Ok(match category {
@@ -27,6 +28,7 @@ pub fn fields(category: &str) -> Result<Vec<&'static str>> {
         ],
         "POS" => vec!["结算总金额"],
         "超市销售收入" => vec!["现金"],
+        "新系统卡余额" => vec!["期末余额"],
         "抖音" => vec!["用户侧划线价合计", "订单实收合计", "预计收入合计"],
         _ => bail!("不支持的图片类别"),
     })
@@ -76,6 +78,23 @@ pub fn supermarket_total(recognized: &[serde_json::Value]) -> Result<Option<Cell
         let values = parse_fields("超市销售收入", data)?;
         Ok::<_, anyhow::Error>(total + rounded(values["现金"]))
     })?;
+    Ok(Some(Cell::Number(amount.normalize().to_string())))
+}
+
+/// Read one closing-balance total, using the simple report's configurable divisor.
+pub fn new_system_balance(recognized: &[serde_json::Value], divisor: &str) -> Result<Option<Cell>> {
+    ensure!(
+        recognized.len() <= 1,
+        "新系统卡余额请选择一张合计截图，避免重复累计"
+    );
+    let Some(data) = recognized.first() else {
+        return Ok(None);
+    };
+    let scale = number(divisor)?;
+    ensure!(scale > D::ZERO, "金额折算除数必须大于零");
+    let values = parse_fields("新系统卡余额", data)?;
+    let amount = (values["期末余额"] / scale)
+        .round_dp_with_strategy(2, RoundingStrategy::MidpointAwayFromZero);
     Ok(Some(Cell::Number(amount.normalize().to_string())))
 }
 pub fn apply(
@@ -164,6 +183,7 @@ pub fn apply_many(
                     ("AZ", v("用户侧划线价合计") - v("订单实收合计")),
                 ]);
             }
+            "新系统卡余额" => bail!("新系统卡余额截图仅用于简表 G8"),
             _ => unreachable!(),
         }
         for (cell, amount) in first {
@@ -193,6 +213,34 @@ pub fn apply_many(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn new_system_balance_uses_one_closing_total_and_the_simple_divisor() {
+        assert!(new_system_balance(&[], "3").unwrap().is_none());
+        for (data, divisor, expected) in [
+            (
+                json!({"期末余额":"1,234.50", "期初余额":"9999"}),
+                "3",
+                "411.5",
+            ),
+            (json!({"期末余额":"1234.50"}), "6", "205.75"),
+            (json!({"期末余额":0}), "3", "0"),
+            (json!({"期末余额":"0.015"}), "3", "0.01"),
+        ] {
+            assert!(
+                matches!(new_system_balance(&[data], divisor).unwrap(), Some(Cell::Number(value)) if value == expected)
+            );
+        }
+        for data in [
+            json!({"期末余额":null}),
+            json!({"期初余额":1234}),
+            json!({"期末余额":"无法识别"}),
+        ] {
+            assert!(new_system_balance(&[data], "3").is_err());
+        }
+        assert!(new_system_balance(&[json!({"期末余额":3}), json!({"期末余额":3})], "3").is_err());
+        assert!(new_system_balance(&[json!({"期末余额":3})], "0").is_err());
+    }
 
     #[test]
     fn supermarket_totals_keep_daily_rounding_and_distinguish_missing_from_zero() {

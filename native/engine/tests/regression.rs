@@ -400,7 +400,9 @@ fn reject_invalid_sources_and_divisors() {
     req.closing_balance = "NaN".into();
     assert!(report::simple(&req).is_err());
     req.closing_balance = "0".into();
-    assert_eq!(value(&report::simple(&req).unwrap(), "G7"), "0");
+    let result = report::simple(&req).unwrap();
+    assert_eq!(value(&result, "G8"), "0");
+    assert!(!result.updates["Sheet1"].cells.contains_key("G7"));
     let p = dir.path().join("details.csv");
     let content = std::fs::read_to_string(&p).unwrap();
     std::fs::write(&p, content.replace("240,234", "241,234")).unwrap();
