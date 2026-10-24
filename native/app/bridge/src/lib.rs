@@ -238,16 +238,19 @@ fn prepare(job: Job) -> Result<Prepared> {
     use chrono::Datelike;
     let date = chrono::NaiveDate::parse_from_str(&job.date, "%Y-%m-%d")
         .context("请选择有效的表格日期（年-月-日）")?;
-    for time in [&job.work_start, &job.shift_time] {
-        chrono::NaiveDateTime::parse_from_str(time, "%Y-%m-%d %H:%M:%S")
-            .context("上班和交班时间格式应为 年-月-日 时:分:秒")?;
-    }
-    let price = financial_engine::source::number(&job.gas_price)?;
-    anyhow::ensure!(
-        price >= financial_engine::source::number("0.01")?
-            && price <= financial_engine::source::number("10000")?,
-        "92#汽油价格应在 0.01 至 10000 之间"
-    );
+    // Shift times are log-only; only Douyin's daily litre conversion uses this price.
+    let price = if job.kind == "daily" && job.files.iter().any(|file| file.category == "抖音") {
+        let price =
+            financial_engine::source::number(&job.gas_price).context("抖音 / 92#汽油价格")?;
+        anyhow::ensure!(
+            price >= financial_engine::source::number("0.01")?
+                && price <= financial_engine::source::number("10000")?,
+            "92#汽油价格应在 0.01 至 10000 之间"
+        );
+        price
+    } else {
+        Default::default()
+    };
     let day = date.day();
     let has_balance_image = job.files.iter().any(|file| file.category == "新系统卡余额");
     anyhow::ensure!(
@@ -931,6 +934,54 @@ mod tests {
     }
 
     #[test]
+    fn unused_shift_times_and_price_do_not_block_reports_but_douyin_still_needs_its_price() {
+        let files = isolated_fixture();
+        for kind in ["simple", "daily"] {
+            let mut request = job(files.path());
+            request.kind = kind.into();
+            request.work_start.clear();
+            request.shift_time = "log-only value".into();
+            request.gas_price = "unused".into();
+            if kind == "daily" {
+                request.template = files
+                    .path()
+                    .join("daily.xlsx")
+                    .to_string_lossy()
+                    .into_owned();
+                request.files.push(InputFile {
+                    category: "油品优惠".into(),
+                    path: files
+                        .path()
+                        .join("discounts.csv")
+                        .to_string_lossy()
+                        .into_owned(),
+                });
+            }
+            let result = prepare(request.clone()).unwrap();
+            Reports::discard(result.id);
+            if kind == "daily" {
+                request.files.push(InputFile {
+                    category: "抖音".into(),
+                    path: files
+                        .path()
+                        .join("receipt.png")
+                        .to_string_lossy()
+                        .into_owned(),
+                });
+                let before = std::fs::read(&request.template).unwrap();
+                for price in ["invalid", "0", "10001"] {
+                    request.gas_price = price.into();
+                    assert!(
+                        format!("{:#}", prepare(request.clone()).err().unwrap())
+                            .contains("汽油价格")
+                    );
+                    assert_eq!(std::fs::read(&request.template).unwrap(), before);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn missing_or_unreadable_balance_does_not_overwrite_a_saved_workbook() {
         let files = isolated_fixture();
         let mut request = job(files.path());
@@ -1343,10 +1394,10 @@ mod tests {
         invalid.date = "2026-02-30".into();
         assert!(prepare(invalid).is_err());
         let mut invalid = job(tmp.path());
-        invalid.shift_time = "25:00".into();
+        invalid.divisor = "0".into();
         assert!(prepare(invalid).is_err());
         let mut invalid = job(tmp.path());
-        invalid.gas_price = "0".into();
+        invalid.count_divisor = "invalid".into();
         assert!(prepare(invalid).is_err());
         let before = std::fs::read(tmp.path().join("simple.xlsx")).unwrap();
         let source_before = std::fs::read(tmp.path().join("recharge.csv")).unwrap();

@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use calamine::{Reader, open_workbook_auto};
 use chrono::NaiveDateTime;
 use regex::Regex;
@@ -16,9 +16,27 @@ pub struct Table {
     pub period: Vec<NaiveDateTime>,
     pub stations: BTreeSet<String>,
 }
+/// Ignore presentation whitespace in labels, never in numeric values.
+pub fn label(value: &str) -> String {
+    value
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '\u{feff}')
+        .collect()
+}
 pub fn number(value: &str) -> Result<Decimal> {
-    Decimal::from_str(value.trim())
-        .or_else(|_| Decimal::from_scientific(value.trim()))
+    let value = value.trim();
+    let grouped = value.replace('，', ",");
+    let cleaned = if grouped.contains(',') {
+        ensure!(
+            Regex::new(r"^[+-]?\d{1,3}(,\d{3})+(\.\d+)?$")?.is_match(&grouped),
+            "无效数值：{value:?}"
+        );
+        grouped.replace(',', "")
+    } else {
+        grouped
+    };
+    Decimal::from_str(&cleaned)
+        .or_else(|_| Decimal::from_scientific(&cleaned))
         .with_context(|| format!("无效数值：{value:?}"))
 }
 pub fn num(row: &Row, name: &str) -> Result<Decimal> {
@@ -53,11 +71,17 @@ pub fn read(path: &Path, required: &[&str], numeric: &[&str], discount: bool) ->
     let all = rows(path)?;
     let header = all
         .iter()
-        .take(10)
-        .position(|row| required.iter().all(|k| row.iter().any(|v| v == k)))
+        .position(|row| required.iter().all(|k| row.iter().any(|v| label(v) == *k)))
         .with_context(|| format!("{} 找不到表头：{}", path.display(), required.join("、")))?;
-    let labels = &all[header];
-    for key in required {
+    let labels: Vec<_> = all[header].iter().map(|v| label(v)).collect();
+    for key in required
+        .iter()
+        .chain(numeric)
+        .chain([&"站号", &"加油完成时间"])
+    {
+        if !required.contains(key) && !labels.iter().any(|v| v == key) {
+            continue;
+        }
         if labels.iter().filter(|v| v == key).count() != 1 {
             bail!("表头字段重复：{key}")
         }
@@ -84,12 +108,18 @@ pub fn read(path: &Path, required: &[&str], numeric: &[&str], discount: bool) ->
         {
             continue;
         }
-        let row: Row = labels
+        let mut row: Row = labels
             .iter()
             .enumerate()
             .filter(|(_, k)| !k.is_empty())
             .map(|(j, k)| (k.clone(), values.get(j).cloned().unwrap_or_default()))
             .collect();
+        if let Some(fuel) = row.get_mut("油品") {
+            let normalized = label(fuel).replace('＃', "#");
+            if crate::report::FUELS.contains(&normalized.as_str()) {
+                *fuel = normalized;
+            }
+        }
         if discount && (text(&row, "油品").is_empty() || number(text(&row, "油品")).is_ok()) {
             continue;
         }

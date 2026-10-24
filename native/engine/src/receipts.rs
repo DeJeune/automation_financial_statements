@@ -127,7 +127,8 @@ pub fn apply_many(
         return Ok(());
     }
     let mut book = calamine::open_workbook_auto(template)?;
-    let range = book.worksheet_range("油品优惠明细 2")?;
+    let name = crate::workbook::sheet_name(&book.sheet_names(), "油品优惠明细 2")?;
+    let range = book.worksheet_range(&name)?;
     let start = range.start().unwrap_or_default();
     let date_row = range
         .used_cells()

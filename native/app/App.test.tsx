@@ -451,6 +451,9 @@ test("fixed stations persist names, prices, selection and removal without yester
   expect(reopened.value("id:batch-name")).toBe("城西站");
   expect(reopened.value("id:gas-price")).toBe("9.12");
   await reopened.press("id:batch-1");
+  await reopened.waitUntil(
+    () => reopened.value("id:batch-name") === "城东站" && reopened.value("id:gas-price") === "8.51",
+  );
   expect(reopened.value("id:batch-name")).toBe("城东站");
   expect(reopened.value("id:gas-price")).toBe("8.51");
   expect(reopened.value("id:date")).not.toBe("2001-01-01");
@@ -466,6 +469,7 @@ test("fixed stations persist names, prices, selection and removal without yester
     () => !Reports.stations().stations.some((station) => station.number === 2),
   );
   const last = await open("./App.tsx", options);
+  await last.waitUntil(() => last.value("id:batch-name") === "城东站");
   expect(last.shows("id:batch-2")).toBe(false);
   expect(last.value("id:batch-name")).toBe("城东站");
   expect(last.value("id:gas-price")).toBe("8.51");

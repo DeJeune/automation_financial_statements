@@ -124,13 +124,19 @@ pub fn simple(req: &Request) -> Result<Report> {
         &["单价", "升数", "油机金额", "结算金额", "优惠金额"],
         false,
     )?;
-    let recharge = load(
+    let mut recharge = load(
         req,
         "充值明细",
         &["原余额", "充值金额", "充值赠送", "付款方式"],
-        &["原余额", "充值金额", "充值赠送"],
+        &["原余额", "充值金额"],
         false,
     )?;
+    for row in &mut recharge.rows {
+        if text(row, "充值赠送").is_empty() {
+            row.insert("充值赠送".into(), "0".into());
+        }
+        num(row, "充值赠送").context("充值明细 / 充值赠送")?;
+    }
     let discount = if req.sources.contains_key("油品优惠") {
         Some(load(req, "油品优惠", &["油品", "优惠"], &["优惠"], true)?)
     } else {
@@ -376,10 +382,11 @@ pub fn daily(req: &Request, template: &std::path::Path) -> Result<Report> {
     scales(req)?;
     let mut book = calamine::open_workbook_auto(template)?;
     use calamine::Reader;
+    let names = book.sheet_names().to_vec();
     // C68 may allocate part of the cash recharge to C72 (corporate recharge).
     // The template owns that allocation when it supplies a formula.
     let preserve_cash_formula = book
-        .worksheet_formula("调价前")?
+        .worksheet_formula(&crate::workbook::sheet_name(&names, "调价前")?)?
         .get_value((67, 2))
         .is_some_and(|formula| !formula.trim().is_empty());
     let mut updates = Updates::new();
@@ -399,7 +406,7 @@ pub fn daily(req: &Request, template: &std::path::Path) -> Result<Report> {
         if period == 1 && statistics.len() < 2 {
             continue;
         }
-        let range = book.worksheet_range(sheet)?;
+        let range = book.worksheet_range(&crate::workbook::sheet_name(&names, sheet)?)?;
         let mut out = SheetUpdate::default();
         let mut positions = BTreeMap::new();
         let mut section = String::new();
@@ -489,7 +496,7 @@ pub fn daily(req: &Request, template: &std::path::Path) -> Result<Report> {
         );
     }
     let discounts = load(req, "油品优惠", &["油品", "优惠"], &["优惠"], true)?;
-    let range = book.worksheet_range("油品优惠明细 2")?;
+    let range = book.worksheet_range(&crate::workbook::sheet_name(&names, "油品优惠明细 2")?)?;
     let day_row = range
         .used_cells()
         .find(|(r, c, v)| {
