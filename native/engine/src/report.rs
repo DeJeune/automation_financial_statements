@@ -13,6 +13,21 @@ pub fn round(v: D, dp: u32) -> D {
 fn sum<'a>(rows: impl Iterator<Item = &'a Row>, key: &str) -> Result<D> {
     rows.map(|r| num(r, key)).sum()
 }
+fn online_recharge(recharge: &Table, scale: D) -> Result<D> {
+    let selected: Vec<_> = recharge
+        .rows
+        .iter()
+        .filter(|row| {
+            let method = text(row, "付款方式");
+            method.contains("微信") || method.contains("支付宝")
+        })
+        .collect();
+    Ok(
+        ((sum(selected.iter().copied(), "充值金额")? + sum(selected.iter().copied(), "充值赠送")?)
+            / scale)
+            .round_dp_with_strategy(2, RoundingStrategy::MidpointNearestEven),
+    )
+}
 fn put(s: &mut SheetUpdate, key: impl Into<String>, value: D) {
     s.cells
         .insert(key.into(), Cell::Number(value.normalize().to_string()));
@@ -104,16 +119,9 @@ pub fn simple(req: &Request) -> Result<Report> {
             "结算金额",
             "优惠金额",
             "收款方式",
-            "IC卡余额",
+            "实收金额",
         ],
-        &[
-            "单价",
-            "升数",
-            "油机金额",
-            "结算金额",
-            "优惠金额",
-            "IC卡余额",
-        ],
+        &["单价", "升数", "油机金额", "结算金额", "优惠金额"],
         false,
     )?;
     let recharge = load(
@@ -258,10 +266,9 @@ pub fn simple(req: &Request) -> Result<Report> {
         .iter()
         .filter(|r| {
             num(r, "优惠金额").is_ok_and(|v| v == D::ZERO)
-                && num(r, "IC卡余额").is_ok_and(|v| v == D::ZERO)
                 && num(r, "结算金额").is_ok_and(|v| v != D::ZERO)
                 && ["92#汽油", "95#汽油"].contains(&text(r, "油品"))
-                && text(r, "收款方式") != "回罐收款"
+                && !["回罐收款", "回灌收款"].contains(&text(r, "收款方式"))
         })
         .collect();
     put(&mut first, "B13", round(D::from(no_card.len()) / counts, 0));
@@ -269,7 +276,7 @@ pub fn simple(req: &Request) -> Result<Report> {
     put(
         &mut first,
         "D13",
-        round(sum(no_card.into_iter(), "结算金额")? / scale, 2),
+        round(sum(no_card.into_iter(), "实收金额")? / scale, 2),
     );
     for (is_new, count_cell, amount_cell) in [(true, "B8", "D8"), (false, "B9", "D9")] {
         let selected: Vec<_> = recharge
@@ -303,20 +310,7 @@ pub fn simple(req: &Request) -> Result<Report> {
             );
         }
     }
-    put(
-        &mut first,
-        "B12",
-        round(
-            sum(
-                recharge
-                    .rows
-                    .iter()
-                    .filter(|r| ["微信收款", "支付宝收款"].contains(&text(r, "付款方式"))),
-                "充值金额",
-            )? / scale,
-            2,
-        ),
-    );
+    put(&mut first, "B12", online_recharge(&recharge, scale)?);
     if !req.closing_balance.trim().is_empty() {
         put(
             &mut first,
@@ -349,7 +343,7 @@ pub fn simple(req: &Request) -> Result<Report> {
         updates: BTreeMap::from([("Sheet1".into(), first), ("Sheet2".into(), second)]),
         notes: vec![
             "源表升数、油机金额、次数交叉校验通过".into(),
-            "消费使用结算金额；旧充值包含赠送；未说明字段保留原值".into(),
+            "卡消费使用结算金额；无卡使用实收金额，不筛选余额，排除回罐；充值包含赠送".into(),
         ],
     })
 }
@@ -472,20 +466,17 @@ pub fn daily(req: &Request, template: &std::path::Path) -> Result<Report> {
         }
     }
     for (online, cell) in [(true, "C73"), (false, "C68")] {
+        if online {
+            put(&mut first, cell, online_recharge(&recharge, scale)?);
+            continue;
+        }
         if cell == "C68" && preserve_cash_formula {
             continue;
         }
         let selected: Vec<_> = recharge
             .rows
             .iter()
-            .filter(|r| {
-                let s = text(r, "付款方式");
-                if online {
-                    s.contains("微信") || s.contains("支付宝")
-                } else {
-                    s.contains("现金")
-                }
-            })
+            .filter(|r| text(r, "付款方式").contains("现金"))
             .collect();
         put(
             &mut first,

@@ -25,7 +25,7 @@ fn request(root: &Path) -> Request {
 }
 fn fixture(root: &Path) {
     std::fs::write(root.join("stats.csv"),"机号,油品,加油升,加油元,次数\n3,0#柴油,30,240,1\n9,92#汽油,30,270,1\n11,95#汽油,30,300,1\n汇总,,90,810,3\n").unwrap();
-    std::fs::write(root.join("details.csv"),"油品,单价,升数,油机金额,结算金额,优惠金额,收款方式,IC卡余额\n0#柴油,8,30,240,234,6,充值卡收款 ,0\n92#汽油,9,30,270,258,9,电子卡收款 ,0\n95#汽油,10,30,300,300,0,现金收款,0\n").unwrap();
+    std::fs::write(root.join("details.csv"),"油品,单价,升数,油机金额,结算金额,优惠金额,收款方式,IC卡余额,实收金额\n0#柴油,8,30,240,234,6,充值卡收款 ,0,230\n92#汽油,9,30,270,258,9,电子卡收款 ,0,250\n95#汽油,10,30,300,300,0,现金收款,0,290\n").unwrap();
     std::fs::write(root.join("recharge.csv"),"原余额,充值金额,充值赠送,付款方式\n100,300,30,现金收款 \n100,600,0,微信收款 \n100,600,0,支付宝收款\n0,0,0,\n次数,1500,30,\n").unwrap();
 }
 fn value(report: &financial_engine::Report, cell: &str) -> String {
@@ -38,7 +38,7 @@ fn price_change_fixture(root: &Path) -> Request {
     fixture(root);
     std::fs::write(root.join("stats.csv"), "油品时间统计\n时间：2026-10-20 07:00:00------2026-10-20 12:00:00\n站号,机号,油品,加油升,加油元,次数\n14,3,0#柴油,30.01,240.08,1\n14,9,92#汽油,3.01,27.09,1\n14,11,95#汽油,6.01,60.10,1\n合计,,,39.03,327.27,3\n").unwrap();
     std::fs::write(root.join("after.csv"), "油品时间统计\n时间：2026-10-20 12:00:00------2026-10-21 07:00:00\n站号,机号,油品,加油升,加油元,次数\n14,3,0#柴油,30.01,270.09,1\n14,9,92#汽油,3.01,30.10,1\n14,11,95#汽油,6.01,66.11,1\n合计,,,39.03,366.30,3\n").unwrap();
-    std::fs::write(root.join("details.csv"), "加油明细\n时间：2026-10-20 07:00:00------2026-10-21 07:00:00\n油品,单价,升数,油机金额,结算金额,优惠金额,收款方式,IC卡余额,加油完成时间\n0#柴油,8,30.01,240.08,240.08,0,现金收款,0,2026-10-20 11:00:00\n0#柴油,9,30.01,270.09,270.09,0,现金收款,0,2026-10-20 12:00:00\n92#汽油,9,3.01,27.09,27.09,0,现金收款,0,2026-10-20 11:00:00\n92#汽油,10,3.01,30.10,30.10,0,现金收款,0,2026-10-20 12:00:00\n95#汽油,10,6.01,60.10,60.10,0,现金收款,0,2026-10-20 11:00:00\n95#汽油,11,6.01,66.11,66.11,0,现金收款,0,2026-10-20 12:00:00\n").unwrap();
+    std::fs::write(root.join("details.csv"), "加油明细\n时间：2026-10-20 07:00:00------2026-10-21 07:00:00\n油品,单价,升数,油机金额,结算金额,优惠金额,收款方式,IC卡余额,加油完成时间,实收金额\n0#柴油,8,30.01,240.08,240.08,0,现金收款,0,2026-10-20 11:00:00,240.08\n0#柴油,9,30.01,270.09,270.09,0,现金收款,0,2026-10-20 12:00:00,270.09\n92#汽油,9,3.01,27.09,27.09,0,现金收款,0,2026-10-20 11:00:00,27.09\n92#汽油,10,3.01,30.10,30.10,0,现金收款,0,2026-10-20 12:00:00,30.10\n95#汽油,10,6.01,60.10,60.10,0,现金收款,0,2026-10-20 11:00:00,60.10\n95#汽油,11,6.01,66.11,66.11,0,现金收款,0,2026-10-20 12:00:00,66.11\n").unwrap();
     let mut req = request(root);
     req.sources
         .insert("油品时间统计(调价后)".into(), root.join("after.csv"));
@@ -150,7 +150,7 @@ fn same_price_splits_keep_original_algorithm_and_daily_template_prices_cannot_ch
         "机号,油品,加油升,加油元,次数\n9,92#汽油,315.02,2739.85,1\n",
     )
     .unwrap();
-    std::fs::write(dir.path().join("details.csv"), "油品,单价,升数,油机金额,结算金额,优惠金额,收款方式,IC卡余额\n92#汽油,8.7,123.65,1075.73,1075.73,0,现金收款,0\n92#汽油,8.7,315.02,2739.85,2739.85,0,现金收款,0\n").unwrap();
+    std::fs::write(dir.path().join("details.csv"), "油品,单价,升数,油机金额,结算金额,优惠金额,收款方式,IC卡余额,实收金额\n92#汽油,8.7,123.65,1075.73,1075.73,0,现金收款,0,1075.73\n92#汽油,8.7,315.02,2739.85,2739.85,0,现金收款,0,2739.85\n").unwrap();
     let mut req = request(dir.path());
     req.sources
         .insert("油品时间统计(调价后)".into(), dir.path().join("after.csv"));
@@ -223,7 +223,7 @@ fn consumption_recharge_and_count_rules() {
         ("B12", "400"),
         ("D11", "164"),
         ("D12", "86"),
-        ("D13", "100"),
+        ("D13", "96.67"),
     ] {
         assert_eq!(value(&r, cell), expected, "{cell}");
     }
@@ -231,24 +231,37 @@ fn consumption_recharge_and_count_rules() {
     assert!(!r.updates["Sheet1"].cells.contains_key("B10"));
 }
 #[test]
-fn no_card_checks_balance_and_excludes_tank_returns() {
+fn online_recharge_includes_gifts_refunds_and_payment_labels() {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path());
+    std::fs::write(
+        dir.path().join("recharge.csv"),
+        "原余额,充值金额,充值赠送,付款方式\n100,18144,240,微信收款\n100,3700,0,支付宝收款\n100,-300,-30,微信退款\n100,600,30,线上支付宝收款\n100,999,99,现金收款\n",
+    )
+    .unwrap();
+    let report = report::simple(&request(dir.path())).unwrap();
+    assert_eq!(value(&report, "B12"), "7461.33");
+}
+
+#[test]
+fn no_card_uses_actual_receipts_ignores_balance_and_excludes_tank_returns() {
     let dir = tempfile::tempdir().unwrap();
     fixture(dir.path());
     std::fs::write(
         dir.path().join("stats.csv"),
-        "机号,油品,加油升,加油元,次数\n1,0#柴油,10,80,1\n2,92#汽油,40,360,4\n3,95#汽油,20,200,2\n",
+        "机号,油品,加油升,加油元,次数\n1,0#柴油,10,80,1\n2,92#汽油,40,360,4\n3,95#汽油,30,300,3\n",
     )
     .unwrap();
-    std::fs::write(dir.path().join("details.csv"), "油品,单价,升数,油机金额,结算金额,优惠金额,收款方式,IC卡余额,卡号\n0#柴油,8,10,80,80,0,现金收款,0,0\n92#汽油,9,10,90,0,0,现金收款,0,0\n92#汽油,9,10,90,85,5,现金收款,0,0\n95#汽油,10,10,100,100,0,充值卡收款,0,0\n92#汽油,9,10,90,90,0,现金收款,10,0\n95#汽油,10,10,100,100,0,回罐收款  ,0,9321\n92#汽油,9,10,90,90,0,现金收款,0,123\n").unwrap();
+    std::fs::write(dir.path().join("details.csv"), "油品,单价,升数,油机金额,结算金额,优惠金额,收款方式,IC卡余额,卡号,实收金额\n0#柴油,8,10,80,80,0,现金收款,0,0,70\n92#汽油,9,10,90,0,0,现金收款,0,0,0\n92#汽油,9,10,90,85,5,现金收款,0,0,80\n95#汽油,10,10,100,100,0,充值卡收款,200,0,93\n92#汽油,9,10,90,90,0,现金收款,10,0,90\n95#汽油,10,10,100,100,0,回罐收款  ,0,9321,100\n92#汽油,9,10,90,90,0,现金收款,0,123,90\n95#汽油,10,10,100,100,0,回灌收款,0,0,100\n").unwrap();
     let mut req = request(dir.path());
     req.count_divisor = "1".into();
     let report = report::simple(&req).unwrap();
-    assert_eq!(value(&report, "B13"), "2");
-    assert_eq!(value(&report, "D13"), "63.33");
+    assert_eq!(value(&report, "B13"), "3");
+    assert_eq!(value(&report, "D13"), "91");
 }
 
 #[test]
-fn missing_or_invalid_card_balance_is_not_zero() {
+fn no_card_does_not_require_or_validate_card_balance() {
     let dir = tempfile::tempdir().unwrap();
     fixture(dir.path());
     let path = dir.path().join("details.csv");
@@ -256,15 +269,39 @@ fn missing_or_invalid_card_balance_is_not_zero() {
     for invalid in ["", "bad", "NaN", "Infinity"] {
         std::fs::write(
             &path,
-            data.replace("300,0,现金收款,0", &format!("300,0,现金收款,{invalid}")),
+            data.replace("现金收款,0,290", &format!("现金收款,{invalid},290")),
+        )
+        .unwrap();
+        assert_eq!(
+            value(&report::simple(&request(dir.path())).unwrap(), "D13"),
+            "96.67"
+        );
+    }
+    std::fs::write(&path, data.replace("IC卡余额", "余额备注")).unwrap();
+    assert_eq!(
+        value(&report::simple(&request(dir.path())).unwrap(), "D13"),
+        "96.67"
+    );
+}
+
+#[test]
+fn no_card_requires_actual_receipts_instead_of_falling_back_to_settlement() {
+    let dir = tempfile::tempdir().unwrap();
+    fixture(dir.path());
+    let path = dir.path().join("details.csv");
+    let data = std::fs::read_to_string(&path).unwrap();
+    for invalid in ["", "bad", "NaN", "Infinity"] {
+        std::fs::write(
+            &path,
+            data.replace("现金收款,0,290", &format!("现金收款,0,{invalid}")),
         )
         .unwrap();
         let error = report::simple(&request(dir.path())).unwrap_err();
-        assert!(format!("{error:#}").contains("IC卡余额"));
+        assert!(format!("{error:#}").contains("实收金额"));
     }
-    std::fs::write(&path, data.replace(",IC卡余额", "")).unwrap();
+    std::fs::write(&path, data.replace("实收金额", "收款备注")).unwrap();
     let error = report::simple(&request(dir.path())).unwrap_err();
-    assert!(format!("{error:#}").contains("IC卡余额"));
+    assert!(format!("{error:#}").contains("实收金额"));
 }
 
 #[test]
@@ -412,7 +449,7 @@ fn verified_oct20_values_and_output_preservation() {
             "{address}"
         );
     }
-    assert_eq!(value(&result, "D13"), "1586.33");
+    assert_eq!(value(&result, "D13"), "1550.99");
     assert_eq!(sample.get_value((12, 3)).unwrap().to_string(), "1550.99");
     let out = tempfile::tempdir().unwrap();
     let path = out.path().join("简表.xlsx");

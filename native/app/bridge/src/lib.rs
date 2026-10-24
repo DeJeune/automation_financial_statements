@@ -62,6 +62,7 @@ struct Snapshot {
     batch_id: String,
     kind: String,
     supermarket_files: Vec<String>,
+    recharge_files: Vec<String>,
     directory: tempfile::TempDir,
     report: Report,
 }
@@ -105,6 +106,42 @@ fn supermarket_files(job: &Job) -> Vec<String> {
         .filter(|file| file.category == "超市销售收入")
         .map(|file| file.path.clone())
         .collect()
+}
+
+fn recharge_files(job: &Job) -> Vec<String> {
+    job.files
+        .iter()
+        .filter(|file| file.category == "充值明细")
+        .map(|file| file.path.clone())
+        .collect()
+}
+
+fn daily_online_recharge(job: &Job) -> Result<Option<Cell>> {
+    if job.daily_result_id.is_empty() {
+        return Ok(None);
+    }
+    let all = snapshots()
+        .lock()
+        .map_err(|_| anyhow::anyhow!("任务状态不可用"))?;
+    let daily = all
+        .get(&job.daily_result_id)
+        .context("日报结果已失效，请重新处理")?;
+    anyhow::ensure!(
+        daily.kind == "daily" && daily.batch_id == job.batch_id,
+        "线上充值必须来自当前加油站的日报结果"
+    );
+    anyhow::ensure!(
+        daily.recharge_files == recharge_files(job),
+        "充值明细已变化，请重新处理"
+    );
+    daily
+        .report
+        .updates
+        .get("调价前")
+        .and_then(|sheet| sheet.cells.get("C73"))
+        .cloned()
+        .map(Some)
+        .context("日报结果没有线上充值金额，请重新处理")
 }
 
 fn daily_supermarket(job: &Job) -> Result<Option<Cell>> {
@@ -286,6 +323,16 @@ fn prepare(job: Job) -> Result<Prepared> {
         let recognized = recognize_images(&job)?;
         financial_engine::receipts::apply_many(&mut report, &template, day, price, &recognized)?;
     } else {
+        if let Some(amount) = daily_online_recharge(&job)? {
+            let (main, _) = workbook::simple_template_sheets(&template)?;
+            report
+                .updates
+                .get_mut(&main)
+                .context("缺少简表主表数据")?
+                .cells
+                .insert("B12".into(), amount);
+            report.notes.push("线上充值：直接复用本次日报 C73".into());
+        }
         let amount = match daily_supermarket(&job)? {
             Some(amount) => Some(amount),
             None => {
@@ -386,6 +433,7 @@ fn prepare(job: Job) -> Result<Prepared> {
                 batch_id: job.batch_id.clone(),
                 kind: job.kind.clone(),
                 supermarket_files: supermarket_files(&job),
+                recharge_files: recharge_files(&job),
                 directory,
                 report,
             },
@@ -795,6 +843,96 @@ mod tests {
     }
 
     #[test]
+    fn simple_reuses_daily_online_recharge_and_checks_its_station_and_source() {
+        let files = isolated_fixture();
+        std::fs::write(
+            files.path().join("recharge.csv"),
+            "原余额,充值金额,充值赠送,付款方式\n100,21844,240,微信收款\n",
+        )
+        .unwrap();
+        let mut daily = job(files.path());
+        daily.batch_id = "online-recharge-reuse".into();
+        daily.kind = "daily".into();
+        daily.template = files
+            .path()
+            .join("daily.xlsx")
+            .to_string_lossy()
+            .into_owned();
+        daily.files.push(InputFile {
+            category: "油品优惠".into(),
+            path: files
+                .path()
+                .join("discounts.csv")
+                .to_string_lossy()
+                .into_owned(),
+        });
+        let result = prepare(daily.clone()).unwrap();
+        assert!(daily_online_recharge(&daily).unwrap().is_none());
+        let mut simple = daily;
+        simple.kind = "simple".into();
+        simple.template = files
+            .path()
+            .join("simple.xlsx")
+            .to_string_lossy()
+            .into_owned();
+        simple.daily_result_id = result.id.clone();
+        simple.divisor = "6".into();
+        let reused = prepare(simple.clone()).unwrap();
+        assert_eq!(
+            reused
+                .cells
+                .iter()
+                .find(|cell| cell.address == "B12")
+                .unwrap()
+                .value,
+            "7361.33"
+        );
+        Reports::discard(reused.id);
+        let mut wrong = simple.clone();
+        wrong.batch_id = "different-station".into();
+        assert!(
+            daily_online_recharge(&wrong)
+                .unwrap_err()
+                .to_string()
+                .contains("当前加油站")
+        );
+        let mut wrong = simple.clone();
+        wrong
+            .files
+            .iter_mut()
+            .find(|file| file.category == "充值明细")
+            .unwrap()
+            .path
+            .push_str(".changed");
+        assert!(
+            daily_online_recharge(&wrong)
+                .unwrap_err()
+                .to_string()
+                .contains("充值明细已变化")
+        );
+        Reports::discard(result.id);
+        assert!(
+            daily_online_recharge(&simple)
+                .unwrap_err()
+                .to_string()
+                .contains("已失效")
+        );
+        simple.daily_result_id.clear();
+        simple.divisor = "3".into();
+        let standalone = prepare(simple).unwrap();
+        assert_eq!(
+            standalone
+                .cells
+                .iter()
+                .find(|cell| cell.address == "B12")
+                .unwrap()
+                .value,
+            "7361.33"
+        );
+        Reports::discard(standalone.id);
+    }
+
+    #[test]
     fn simple_reuses_the_daily_supermarket_value_without_another_request_or_division() {
         let files = isolated_fixture();
         let fixture = files.path().to_owned();
@@ -1038,6 +1176,48 @@ mod tests {
         assert_eq!(range.get_value((9, 1)).unwrap().to_string(), "保留");
         Reports::discard(result.id.clone());
         assert!(Reports::output_path(result.id).is_err());
+    }
+
+    #[test]
+    fn readonly_daily_and_simple_workbooks_save_and_clean_up_their_previews() {
+        for kind in ["daily", "simple"] {
+            let files = isolated_fixture();
+            let mut request = job(files.path());
+            request.batch_id = format!("readonly-{kind}");
+            request.kind = kind.into();
+            request.template = files
+                .path()
+                .join(format!("{kind}.xlsx"))
+                .to_string_lossy()
+                .into_owned();
+            if kind == "daily" {
+                request.files.push(InputFile {
+                    category: "油品优惠".into(),
+                    path: files
+                        .path()
+                        .join("discounts.csv")
+                        .to_string_lossy()
+                        .into_owned(),
+                });
+            }
+            let original = std::fs::read(&request.template).unwrap();
+            let mut permissions = std::fs::metadata(&request.template).unwrap().permissions();
+            permissions.set_readonly(true);
+            std::fs::set_permissions(&request.template, permissions).unwrap();
+            let result = prepare(request).unwrap();
+            assert_eq!(std::fs::read(&result.backup_path).unwrap(), original);
+            assert_ne!(std::fs::read(&result.saved_path).unwrap(), original);
+            assert!(
+                !std::fs::metadata(&result.saved_path)
+                    .unwrap()
+                    .permissions()
+                    .readonly()
+            );
+            let preview = PathBuf::from(Reports::output_path(result.id.clone()).unwrap());
+            let directory = preview.parent().unwrap().to_owned();
+            Reports::discard(result.id);
+            assert!(!directory.exists());
+        }
     }
 
     #[test]
