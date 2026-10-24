@@ -32,10 +32,10 @@ def sources(tmp_path):
          [None, '充值卡', '0#柴油 ', 6], [None, '充值卡', '92#汽油 ', 12],
          [None, '充值卡', '95#汽油 ', 0], [None, None, 3, 18], [3, None, 3, 18]],
         [['加油明细'], ['时间：2026-10-16 8:34:40------2026-10-17 8:32:40'],
-         ['流水号', '油品', '升数', '油机金额', '结算金额', '优惠金额', '收款方式', '单价', '实收金额'],
-         [1, '0#柴油 ', 30, 240, 234, 6, '充值卡收款   ', 8, 230],
-         [2, '92#汽油 ', 30, 270, 258, 9, '电子卡收款   ', 9, 250],
-         [3, '95#汽油 ', 30, 300, 300, 0, '现金收款   ', 10, 290],
+         ['流水号', '油品', '升数', '油机金额', '结算金额', '优惠金额', '收款方式', '单价', '实收金额', 'IC卡余额'],
+         [1, '0#柴油 ', 30, 240, 234, 6, '充值卡收款   ', 8, 230, 0],
+         [2, '92#汽油 ', 30, 270, 258, 9, '电子卡收款   ', 9, 250, 0],
+         [3, '95#汽油 ', 30, 300, 300, 0, '现金收款   ', 10, 290, 0],
          ['记录总数', 3, 90, 810, 792, 15, None]],
         [['充值明细'], ['时间：2026-10-16 8:34:40------2026-10-17 8:32:40'],
          ['卡号', '站号', '充值金额', '充值赠送', '付款方式', '原余额'],
@@ -71,6 +71,94 @@ def template(tmp_path):
     wb.create_sheet('Sheet3')['A1'] = 'keep'
     wb.save(path)
     return path
+
+
+@pytest.fixture
+def price_change_sources(sources, tmp_path):
+    before = '时间：2026-10-16 08:34:40------2026-10-16 20:00:00'
+    after = '时间：2026-10-16 20:00:00------2026-10-17 08:32:40'
+    full = '时间：2026-10-16 08:34:40------2026-10-17 08:32:40'
+    header = ['站号', '机号', '油品', '加油升', '加油元', '次数']
+    write_export(sources['油品时间统计'], [
+        ['油品时间统计'], [before], header,
+        [14, 3, '0#柴油', 30.01, 240.08, 1],
+        [14, 9, '92#汽油', 3.01, 27.09, 1],
+        [14, 11, '95#汽油', 6.01, 60.10, 1],
+        ['合计', None, None, 39.03, 327.27, 3],
+    ])
+    sources['油品时间统计(调价后)'] = write_export(tmp_path / 'after.xlsx', [
+        ['油品时间统计'], [after], header,
+        [14, 3, '0#柴油', 30.01, 270.09, 1],
+        [14, 9, '92#汽油', 3.01, 30.10, 1],
+        [14, 11, '95#汽油', 6.01, 66.11, 1],
+        ['合计', None, None, 39.03, 366.30, 3],
+    ])
+    write_export(sources['加油明细'], [
+        ['加油明细'], [full],
+        ['油品', '单价', '升数', '油机金额', '结算金额', '优惠金额', '收款方式', 'IC卡余额', '加油完成时间'],
+        ['0#柴油', 8, 30.01, 240.08, 240.08, 0, '现金收款', 0, '2026-10-16 19:00:00'],
+        ['0#柴油', 9, 30.01, 270.09, 270.09, 0, '现金收款', 0, '2026-10-16 20:00:00'],
+        ['92#汽油', 9, 3.01, 27.09, 27.09, 0, '现金收款', 0, '2026-10-16 19:00:00'],
+        ['92#汽油', 10, 3.01, 30.10, 30.10, 0, '现金收款', 0, '2026-10-16 20:00:00'],
+        ['95#汽油', 10, 6.01, 60.10, 60.10, 0, '现金收款', 0, '2026-10-16 19:00:00'],
+        ['95#汽油', 11, 6.01, 66.11, 66.11, 0, '现金收款', 0, '2026-10-16 20:00:00'],
+    ])
+    sources.pop('油品优惠')
+    return sources
+
+
+def test_price_change_combines_all_three_metrics(price_change_sources, shift_config):
+    result = SimpleReportProcessor(shift_config).build_updates(price_change_sources)
+    first = result['updates'][0]['cells']
+    for cell, expected in {
+        'B3': 20, 'D3': 170, 'E3': 1,
+        'B4': 2, 'D4': 19, 'E4': 1,
+        'B5': 4, 'D5': 42, 'E5': 1,
+    }.items():
+        assert first[cell] == expected, cell
+    assert result['processed_data']['原始升数'] == 78.06
+    assert result['processed_data']['原始油机金额'] == 693.57
+    assert result['processed_data']['原始次数'] == 6
+    assert '调价后' in result['processed_data']['时间统计']
+
+
+def test_same_price_splits_preserve_original_algorithm(sources, tmp_path, shift_config):
+    header = ['站号', '机号', '油品', '加油升', '加油元', '次数']
+    write_export(sources['油品时间统计'], [header, [14, 9, '92#汽油', 123.65, 1075.73, 1]])
+    sources['油品时间统计(调价后)'] = write_export(tmp_path / 'after.xlsx', [
+        header, [14, 9, '92#汽油', 315.02, 2739.85, 1]])
+    write_export(sources['加油明细'], [
+        ['油品', '单价', '升数', '油机金额', '结算金额', '优惠金额', '收款方式', 'IC卡余额'],
+        ['92#汽油', 8.7, 123.65, 1075.73, 1075.73, 0, '现金收款', 0],
+        ['92#汽油', 8.7, 315.02, 2739.85, 2739.85, 0, '现金收款', 0]])
+    sources.pop('油品优惠')
+    first = SimpleReportProcessor(shift_config).build_updates(sources)['updates'][0]['cells']
+    assert (first['B4'], first['D4'], first['E4']) == (146.22, 1272.11, 1)
+
+
+def test_actual_price_change_requires_transaction_times(price_change_sources, shift_config):
+    wb = openpyxl.load_workbook(price_change_sources['加油明细'])
+    wb.active['I4'] = 'bad-time'
+    wb.save(price_change_sources['加油明细'])
+    with pytest.raises(ValueError, match='加油完成时间'):
+        SimpleReportProcessor(shift_config).build_updates(price_change_sources)
+
+
+@pytest.mark.parametrize('cell,value,message', [
+    ('D4', 31.01, '升数不一致'),
+    ('E4', 271.09, '油机金额不一致'),
+    ('F4', 2, '次数不一致'),
+    ('A4', 15, '站号不一致'),
+    ('A2', '时间：2026-10-16 20:00:00------2026-10-17 07:32:40', '时段不一致'),
+    ('C4', '98#汽油', '未支持的油品'),
+    ('E3', '缺失金额列', '找不到表头'),
+])
+def test_invalid_after_statistics_fail(price_change_sources, shift_config, cell, value, message):
+    wb = openpyxl.load_workbook(price_change_sources['油品时间统计(调价后)'])
+    wb.active[cell] = value
+    wb.save(price_change_sources['油品时间统计(调价后)'])
+    with pytest.raises(ValueError, match=message):
+        SimpleReportProcessor(shift_config).build_updates(price_change_sources)
 
 
 def test_four_sources_reconcile_and_map(sources, shift_config):
@@ -227,9 +315,9 @@ def test_machine_rounding_before_fuel_total(sources, shift_config, machines, lit
         [machines[0], '92#汽油', 1.01, 8.79, 1], [machines[1], '92#汽油', 1.01, 8.79, 1],
     ])
     write_export(sources['加油明细'], [
-        ['流水号', '油品', '升数', '油机金额', '结算金额', '优惠金额', '收款方式', '单价', '实收金额'],
-        [1, '92#汽油', 1.01, 8.79, 8.79, 0, '现金收款', 8.7, 8.79],
-        [2, '92#汽油', 1.01, 8.79, 8.79, 0, '现金收款', 8.7, 8.79],
+        ['流水号', '油品', '升数', '油机金额', '结算金额', '优惠金额', '收款方式', '单价', '实收金额', 'IC卡余额'],
+        [1, '92#汽油', 1.01, 8.79, 8.79, 0, '现金收款', 8.7, 8.79, 0],
+        [2, '92#汽油', 1.01, 8.79, 8.79, 0, '现金收款', 8.7, 8.79, 0],
     ])
     sources.pop('油品优惠')
     first = SimpleReportProcessor(shift_config).build_updates(sources)['updates'][0]['cells']
@@ -241,19 +329,39 @@ def test_machine_rounding_before_fuel_total(sources, shift_config, machines, lit
 def test_no_card_filter_and_settlement(sources, shift_config):
     write_export(sources['油品时间统计'], [
         ['机号', '油品', '加油升', '加油元', '次数'],
-        [1, '0#柴油', 10, 80, 1], [2, '92#汽油', 20, 180, 2], [3, '95#汽油', 10, 100, 1],
+        [1, '0#柴油', 10, 80, 1], [2, '92#汽油', 40, 360, 4], [3, '95#汽油', 20, 200, 2],
     ])
     write_export(sources['加油明细'], [
-        ['流水号', '油品', '升数', '油机金额', '结算金额', '优惠金额', '收款方式', '单价', '实收金额'],
-        [1, '0#柴油', 10, 80, 80, 0, '现金收款', 8, 70],  # Diesel excluded.
-        [2, '92#汽油', 10, 90, 0, 0, '现金收款', 9, 0],  # Zero settlement excluded.
-        [3, '92#汽油', 10, 90, 85, 5, '现金收款', 9, 80],  # Discount excluded.
-        [4, '95#汽油', 10, 100, 100, 0, '充值卡收款', 10, 93],  # Cards are not excluded.
+        ['流水号', '油品', '升数', '油机金额', '结算金额', '优惠金额', '收款方式', '单价', '实收金额', 'IC卡余额', '卡号'],
+        [1, '0#柴油', 10, 80, 80, 0, '现金收款', 8, 70, 0, 0],  # Diesel excluded.
+        [2, '92#汽油', 10, 90, 0, 0, '现金收款', 9, 0, 0, 0],  # Zero settlement excluded.
+        [3, '92#汽油', 10, 90, 85, 5, '现金收款', 9, 80, 0, 0],  # Discount excluded.
+        [4, '95#汽油', 10, 100, 100, 0, '充值卡收款', 10, 93, 0, 0],
+        [5, '92#汽油', 10, 90, 90, 0, '现金收款', 9, 90, 10, 0],  # Balance excludes cash too.
+        [6, '95#汽油', 10, 100, 100, 0, '回罐收款  ', 10, 100, 0, 9321],
+        [7, '92#汽油', 10, 90, 90, 0, '现金收款', 9, 90, 0, 123],  # Card number is not the filter.
     ])
     sources.pop('油品优惠')
     first = SimpleReportProcessor(shift_config, count_divisor=1).build_updates(sources)['updates'][0]['cells']
-    assert first['B13'] == 1
-    assert first['D13'] == 33.33  # Settlement 100 / 3, not actual receipts 93 / 3.
+    assert first['B13'] == 2
+    assert first['D13'] == 63.33  # Settlement (100 + 90) / 3, not actual receipts.
+
+
+@pytest.mark.parametrize('balance', [None, 'bad', 'NaN', 'Infinity'])
+def test_missing_or_invalid_card_balance_is_not_zero(sources, shift_config, balance):
+    wb = openpyxl.load_workbook(sources['加油明细'])
+    wb.active['J6'] = balance
+    wb.save(sources['加油明细'])
+    with pytest.raises(ValueError, match='IC卡余额'):
+        SimpleReportProcessor(shift_config).build_updates(sources)
+
+
+def test_card_balance_header_is_required(sources, shift_config):
+    wb = openpyxl.load_workbook(sources['加油明细'])
+    wb.active.delete_cols(10)
+    wb.save(sources['加油明细'])
+    with pytest.raises(ValueError, match='IC卡余额'):
+        SimpleReportProcessor(shift_config).build_updates(sources)
 
 
 @pytest.mark.parametrize('missing', [True, False])
@@ -270,7 +378,7 @@ def test_actual_receipts_are_not_required_or_used(sources, shift_config, missing
 
 def test_multiple_fuel_prices_require_split_period(sources, shift_config):
     wb = openpyxl.load_workbook(sources['加油明细'])
-    wb.active.append([4, '92#汽油', 0, 0, 0, 0, '现金收款', 10, 0])
+    wb.active.append([4, '92#汽油', 0, 0, 0, 0, '现金收款', 10, 0, 0])
     wb.save(sources['加油明细'])
     wb = openpyxl.load_workbook(sources['油品时间统计'])
     wb.active['F5'] = 2
