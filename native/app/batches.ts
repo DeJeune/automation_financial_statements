@@ -7,7 +7,7 @@ export const batchPhaseLabel: Record<BatchPhase, string> = {
   draft: "待处理",
   queued: "排队中",
   running: "处理中",
-  done: "可导出",
+  done: "已保存",
   partial: "部分完成",
   failed: "失败",
 };
@@ -35,6 +35,7 @@ export function createBatch(
     parametersOpen: signal(false),
     results: signal<Record<string, Prepared>>({}),
     progress: signal<Progress[]>([]),
+    processing: signal<string[]>([]),
     message: signal(""),
     error: signal(""),
   };

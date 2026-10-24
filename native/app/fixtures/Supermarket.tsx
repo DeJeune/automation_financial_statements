@@ -29,6 +29,8 @@ mount(() => (
         kind: job.kind,
         cells: [],
         notes: [],
+        savedPath: job.template,
+        backupPath: "",
       };
     }}
   />

@@ -2,7 +2,10 @@
 mod preview;
 mod recognition;
 mod runtime;
+mod save;
 mod stations;
+#[cfg(debug_assertions)]
+mod test_files;
 mod updater;
 use anyhow::{Context, Result};
 use financial_engine::{Cell, Report, Request, report, workbook};
@@ -26,6 +29,7 @@ pub struct Job {
     pub batch_id: String,
     pub files: Vec<InputFile>,
     pub template: String,
+    pub protected_files: Vec<String>,
     pub kind: String,
     pub daily_result_id: String,
     pub date: String,
@@ -51,6 +55,8 @@ pub struct Prepared {
     pub kind: String,
     pub cells: Vec<PreviewCell>,
     pub notes: Vec<String>,
+    pub saved_path: String,
+    pub backup_path: String,
 }
 struct Snapshot {
     batch_id: String,
@@ -58,7 +64,6 @@ struct Snapshot {
     supermarket_files: Vec<String>,
     directory: tempfile::TempDir,
     report: Report,
-    protected: Vec<PathBuf>,
 }
 static SNAPSHOTS: OnceLock<Mutex<BTreeMap<String, Snapshot>>> = OnceLock::new();
 type PastedFiles = BTreeMap<String, Vec<tempfile::NamedTempFile>>;
@@ -201,7 +206,28 @@ fn prepare(job: Job) -> Result<Prepared> {
         "92#汽油价格应在 0.01 至 10000 之间"
     );
     let day = date.day();
-    let template = path(&job.template)?;
+    let selected_template = path(&job.template)?
+        .canonicalize()
+        .context("模板不存在或无法读取")?;
+    for file in &job.files {
+        anyhow::ensure!(
+            !path(&file.path)?
+                .canonicalize()
+                .is_ok_and(|source| source == selected_template),
+            "模板不能与源文件使用同一个文件，未写入"
+        );
+    }
+    for other in &job.protected_files {
+        anyhow::ensure!(
+            !path(other)?
+                .canonicalize()
+                .is_ok_and(|target| target == selected_template),
+            "模板不能与其他报表或加油站的模板、源文件共用同一个文件"
+        );
+    }
+    let directory = tempfile::tempdir()?;
+    let template = directory.path().join("template.xlsx");
+    std::fs::copy(&selected_template, &template)?;
     runtime::log(
         "INFO",
         &format!(
@@ -283,19 +309,25 @@ fn prepare(job: Job) -> Result<Prepared> {
                 .push("超市销售收入：已按日报金额填写 B11".into());
         }
     }
-    let protected = std::iter::once(&template)
-        .chain(req.sources.values())
-        .filter_map(|p| p.canonicalize().ok())
-        .collect();
-    let directory = tempfile::tempdir()?;
-    let frozen = directory.path().join("template.xlsx");
-    std::fs::copy(template, &frozen)?;
-    // Validate the complete write, including the user's template, before showing success.
+    // Finish and validate the workbook before backing up and replacing the selected file.
     workbook::write(
-        &frozen,
+        &template,
         &directory.path().join("report.xlsx"),
         &report.updates,
     )?;
+    let backup = save::write_back(
+        &selected_template,
+        &template,
+        &directory.path().join("report.xlsx"),
+    )?;
+    runtime::log(
+        "INFO",
+        &format!(
+            "已保存：{}；备份：{}",
+            selected_template.display(),
+            backup.display()
+        ),
+    );
     for file in &job.files {
         if !financial_engine::receipts::CATEGORIES.contains(&file.category.as_str()) {
             runtime::progress(
@@ -316,7 +348,7 @@ fn prepare(job: Job) -> Result<Prepared> {
         },
         &job.template,
         "完成",
-        "可导出",
+        "已保存到原模板",
     );
     let cells = report
         .updates
@@ -342,6 +374,8 @@ fn prepare(job: Job) -> Result<Prepared> {
         kind: job.kind.clone(),
         cells,
         notes: report.notes.clone(),
+        saved_path: selected_template.to_string_lossy().into_owned(),
+        backup_path: backup.to_string_lossy().into_owned(),
     };
     snapshots()
         .lock()
@@ -354,27 +388,9 @@ fn prepare(job: Job) -> Result<Prepared> {
                 supermarket_files: supermarket_files(&job),
                 directory,
                 report,
-                protected,
             },
         );
     Ok(result)
-}
-fn write_snapshot(id: &str, dest: &std::path::Path) -> Result<()> {
-    let locked = snapshots()
-        .lock()
-        .map_err(|_| anyhow::anyhow!("任务状态不可用"))?;
-    let snapshot = locked.get(id).context("结果已失效，请重新计算")?;
-    if dest
-        .canonicalize()
-        .is_ok_and(|p| snapshot.protected.contains(&p))
-    {
-        anyhow::bail!("不能覆盖原模板或源文件，请另选导出位置");
-    }
-    workbook::write(
-        &snapshot.directory.path().join("template.xlsx"),
-        dest,
-        &snapshot.report.updates,
-    )
 }
 /// Local report generation and system file operations.
 #[module]
@@ -403,7 +419,7 @@ impl Reports {
             .await
             .map(|f| f.path().to_string_lossy().into_owned()))
     }
-    /// Validate inputs and prepare an immutable report snapshot.
+    /// Calculate, back up and save the selected template; retain a preview snapshot.
     pub async fn prepare(job: Job) -> Result<Prepared, String> {
         blocking(move || {
             let category = if job.kind == "simple" {
@@ -421,30 +437,6 @@ impl Reports {
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| format!("{e:#}"))
-    }
-    /// Save a prepared report through the system save dialog.
-    pub async fn export(id: String, kind: String) -> Result<Option<String>, String> {
-        let name = if kind == "simple" {
-            "简表.xlsx"
-        } else {
-            "日报.xlsx"
-        };
-        let Some(file) = rfd::AsyncFileDialog::new()
-            .add_filter("Excel 工作簿", &["xlsx"])
-            .set_file_name(name)
-            .save_file()
-            .await
-        else {
-            return Ok(None);
-        };
-        let dest = file.path().to_path_buf();
-        let shown = dest.to_string_lossy().into_owned();
-        blocking(move || write_snapshot(&id, &dest))
-            .await
-            .map_err(|e| e.to_string())?
-            .map_err(|e| format!("{e:#}"))?;
-        runtime::log("INFO", &format!("已导出：{shown}"));
-        Ok(Some(shown))
     }
     /// Keep a pasted image for this application session.
     pub async fn paste_image(data: String, batch_id: String) -> Result<String, String> {
@@ -633,22 +625,46 @@ impl Reports {
             .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
             .unwrap_or(value)
     }
+    /// Compare selected files after resolving file URLs and filesystem aliases.
+    pub fn same_file(first: String, second: String) -> bool {
+        match (
+            path(&first).and_then(|p| Ok(p.canonicalize()?)),
+            path(&second).and_then(|p| Ok(p.canonicalize()?)),
+        ) {
+            (Ok(first), Ok(second)) => first == second,
+            _ => false,
+        }
+    }
 }
 #[native_module("financial/native")]
 fn native(registry: &mut Registry) {
     registry.module::<Reports>();
+    #[cfg(debug_assertions)]
+    registry.module::<test_files::TestFiles>();
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use calamine::Reader;
+    fn isolated_fixture() -> tempfile::TempDir {
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures");
+        let directory = tempfile::tempdir().unwrap();
+        for entry in std::fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_type().unwrap().is_file() {
+                std::fs::copy(entry.path(), directory.path().join(entry.file_name())).unwrap();
+            }
+        }
+        directory
+    }
     fn job(root: &std::path::Path) -> Job {
         Job {
             batch_id: "test-snapshot".into(),
             kind: "simple".into(),
             daily_result_id: String::new(),
             template: root.join("simple.xlsx").to_string_lossy().into_owned(),
+            protected_files: vec![],
             files: vec![
                 ("油品时间统计", "stats.csv"),
                 ("加油明细", "details.csv"),
@@ -738,7 +754,8 @@ mod tests {
 
     #[test]
     fn supermarket_cash_reaches_simple_without_a_daily_template_including_zero() {
-        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures");
+        let files = isolated_fixture();
+        let fixture = files.path().to_owned();
         for (cash, expected) in [
             (serde_json::json!("587.70"), "195.9"),
             (serde_json::json!(0), "0"),
@@ -762,10 +779,8 @@ mod tests {
                 .unwrap();
             assert_eq!(cell.sheet, "Sheet1");
             assert_eq!(cell.value, expected);
-            let output = tempfile::tempdir().unwrap();
-            let path = output.path().join("simple.xlsx");
-            write_snapshot(&prepared.id, &path).unwrap();
-            let mut book = calamine::open_workbook_auto(path).unwrap();
+            let mut book = calamine::open_workbook_auto(&prepared.saved_path).unwrap();
+            assert!(std::path::Path::new(&prepared.backup_path).is_file());
             assert_eq!(
                 book.worksheet_range_at(0)
                     .unwrap()
@@ -781,7 +796,8 @@ mod tests {
 
     #[test]
     fn simple_reuses_the_daily_supermarket_value_without_another_request_or_division() {
-        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures");
+        let files = isolated_fixture();
+        let fixture = files.path().to_owned();
         let mut daily = job(&fixture);
         daily.batch_id = "supermarket-daily-reuse".into();
         daily.kind = "daily".into();
@@ -859,7 +875,8 @@ mod tests {
 
     #[test]
     fn missing_supermarket_preserves_b11_but_unreadable_cash_fails() {
-        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures");
+        let files = isolated_fixture();
+        let fixture = files.path().to_owned();
         let temp = tempfile::tempdir().unwrap();
         let template = temp.path().join("simple.xlsx");
         let mut update = financial_engine::SheetUpdate::default();
@@ -877,9 +894,7 @@ mod tests {
         request.template = template.to_string_lossy().into_owned();
         let result = prepare(request.clone()).unwrap();
         assert!(!result.cells.iter().any(|cell| cell.address == "B11"));
-        let output = temp.path().join("export.xlsx");
-        write_snapshot(&result.id, &output).unwrap();
-        let mut book = calamine::open_workbook_auto(output).unwrap();
+        let mut book = calamine::open_workbook_auto(&result.saved_path).unwrap();
         assert_eq!(
             book.worksheet_range_at(0)
                 .unwrap()
@@ -890,11 +905,13 @@ mod tests {
             "123"
         );
         Reports::discard(result.id);
+        let saved = std::fs::read(&template).unwrap();
         add_supermarket(&mut request, &fixture);
         let (base, server) = supermarket_provider(serde_json::Value::Null);
         request.api_base = base;
         let error = prepare(request).err().unwrap();
         assert!(format!("{error:#}").contains("未识别"));
+        assert_eq!(std::fs::read(&template).unwrap(), saved);
         server.join().unwrap();
     }
     #[cfg(target_os = "macos")]
@@ -927,10 +944,11 @@ mod tests {
 
     #[test]
     fn resetting_one_batch_preserves_other_progress_outputs_and_pasted_files() {
-        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures");
-        let mut first = job(&fixture);
+        let first_files = isolated_fixture();
+        let second_files = isolated_fixture();
+        let mut first = job(first_files.path());
         first.batch_id = "isolation-first".into();
-        let mut second = job(&fixture);
+        let mut second = job(second_files.path());
         second.batch_id = "isolation-second".into();
         second.balance = "600".into();
         let (first, second) = std::thread::scope(|scope| {
@@ -948,6 +966,7 @@ mod tests {
             pasted.insert("isolation-second".into(), vec![second_image]);
         }
         Reports::reset("isolation-first".into());
+        assert!(std::path::Path::new(&first.saved_path).is_file());
         assert!(Reports::output_path(first.id).is_err());
         assert!(!first_path.exists());
         assert!(second_path.exists());
@@ -964,10 +983,7 @@ mod tests {
                 .iter()
                 .any(|p| p.batch_id == "isolation-second")
         );
-        let destination = tempfile::tempdir().unwrap();
-        let output = destination.path().join("export.xlsx");
-        write_snapshot(&second.id, &output).unwrap();
-        let mut book = calamine::open_workbook_auto(&output).unwrap();
+        let mut book = calamine::open_workbook_auto(&second.saved_path).unwrap();
         assert_eq!(
             book.worksheet_range("Sheet1")
                 .unwrap()
@@ -981,7 +997,7 @@ mod tests {
     }
 
     #[test]
-    fn public_job_validates_dates_and_exports_an_immutable_snapshot() {
+    fn public_job_saves_original_template_with_backup_and_keeps_a_frozen_preview() {
         let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures");
         let tmp = tempfile::tempdir().unwrap();
         for name in ["simple.xlsx", "stats.csv", "details.csv", "recharge.csv"] {
@@ -996,18 +1012,57 @@ mod tests {
         let mut invalid = job(tmp.path());
         invalid.gas_price = "0".into();
         assert!(prepare(invalid).is_err());
+        let before = std::fs::read(tmp.path().join("simple.xlsx")).unwrap();
+        let source_before = std::fs::read(tmp.path().join("recharge.csv")).unwrap();
         let result = prepare(job(tmp.path())).unwrap();
-        assert!(write_snapshot(&result.id, &tmp.path().join("simple.xlsx")).is_err());
+        assert_ne!(
+            std::fs::read(tmp.path().join("simple.xlsx")).unwrap(),
+            before
+        );
+        assert_eq!(std::fs::read(&result.backup_path).unwrap(), before);
+        assert_eq!(
+            std::fs::read(tmp.path().join("recharge.csv")).unwrap(),
+            source_before
+        );
+        let saved = std::fs::read(&result.saved_path).unwrap();
+        let repeated = prepare(job(tmp.path())).unwrap();
+        assert_eq!(std::fs::read(&repeated.backup_path).unwrap(), saved);
+        assert_ne!(repeated.backup_path, result.backup_path);
         std::fs::write(tmp.path().join("recharge.csv"), "changed after calculation").unwrap();
         std::fs::write(tmp.path().join("simple.xlsx"), "changed after calculation").unwrap();
-        let output = tmp.path().join("export.xlsx");
-        write_snapshot(&result.id, &output).unwrap();
+        let output = Reports::output_path(result.id.clone()).unwrap();
         let mut book = calamine::open_workbook_auto(&output).unwrap();
         let range = book.worksheet_range("Sheet1").unwrap();
         assert_eq!(range.get_value((8, 3)).unwrap().to_string(), "510");
         assert_eq!(range.get_value((6, 6)).unwrap().to_string(), "100");
         assert_eq!(range.get_value((9, 1)).unwrap().to_string(), "保留");
         Reports::discard(result.id.clone());
-        assert!(write_snapshot(&result.id, &output).is_err());
+        assert!(Reports::output_path(result.id).is_err());
+    }
+
+    #[test]
+    fn write_back_rejects_source_aliases_and_reused_template_targets() {
+        let files = isolated_fixture();
+        let mut request = job(files.path());
+        let original = std::fs::read(&request.template).unwrap();
+        request.files[0].path = request.template.clone();
+        assert!(
+            prepare(request)
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("源文件")
+        );
+        let mut request = job(files.path());
+        request.protected_files.push(
+            url::Url::from_file_path(&request.template)
+                .unwrap()
+                .to_string(),
+        );
+        assert!(prepare(request).err().unwrap().to_string().contains("共用"));
+        assert_eq!(
+            std::fs::read(files.path().join("simple.xlsx")).unwrap(),
+            original
+        );
     }
 }

@@ -16,6 +16,7 @@ import { Clipboard } from "nsh/clipboard";
 import { Menu, Window } from "nsh/desktop";
 import { keymap } from "nsh/keymap";
 import { type Batch, batchPhaseLabel, createBatch } from "./batches";
+import { CardProgress } from "./CardProgress";
 import { readUploadClipboard, type UploadClipboard } from "./clipboard";
 import {
   Button,
@@ -156,6 +157,7 @@ export function Workstation(
     for (const r of Object.values(batch.results())) Reports.discard(r.id);
     batch.results.set({});
     batch.progress.set([]);
+    batch.processing.set([]);
     Reports.begin(batch.id);
     batch.message.set("");
     batch.error.set("");
@@ -341,6 +343,18 @@ export function Workstation(
     const validated: string[] = [];
     for (const path of paths) validated.push(await Reports.validateFile(path, kind));
     if (!alive) return;
+    for (const selected of validated) {
+      for (const other of batches()) {
+        for (const [otherCategory, existing] of Object.entries(other.files())) {
+          if (other === batch && otherCategory === category) continue;
+          if (
+            (kind === "template" || otherCategory.endsWith("模板")) &&
+            existing.some((path) => Reports.sameFile(selected, path))
+          )
+            throw new Error("模板会直接保存，不能与其他报表或源文件共用同一个文件。");
+        }
+      }
+    }
     invalidate(batch);
     batch.files.update((f) => ({
       ...f,
@@ -455,13 +469,7 @@ export function Workstation(
     const isImage = imageCategories.includes(p.category);
     const failures = () =>
       paths().filter((path) => sourceStatus(p.category, path)?.status === "失败");
-    const status = () => {
-      if (failures().length) return `${failures().length} 个失败 · 展开查看`;
-      const active = paths()
-        .map((path) => sourceStatus(p.category, path)?.status)
-        .filter(Boolean);
-      if (active.length) return [...new Set(active)].join(" / ");
-      if (paths().length) return "已上传";
+    const hint = () => {
       if (["油品时间统计", "加油明细", "充值明细"].includes(p.category)) return "必填";
       if (p.category === "油品优惠") return files().日报模板?.length ? "日报必填" : "可选";
       return p.category.endsWith("模板") ? "按需选择" : "可选";
@@ -482,6 +490,8 @@ export function Workstation(
           add(p.category, e.uris);
         }}
         style={{
+          position: "relative",
+          overflow: "hidden",
           padding: 8,
           gap: 6,
           borderWidth: 1,
@@ -507,18 +517,9 @@ export function Workstation(
             <Text numberOfLines={1} style={{ flex: 1, ...typography.item, color: palette().ink }}>
               {p.category}
             </Text>
-            <Text
-              style={{
-                fontSize: 12,
-                color: failures().length
-                  ? palette().error
-                  : paths().length
-                    ? palette().green
-                    : palette().muted,
-              }}
-            >
-              {status()}
-            </Text>
+            <If when={!paths().length}>
+              <Text style={{ fontSize: 12, color: palette().muted }}>{hint()}</Text>
+            </If>
           </View>
           <Text
             numberOfLines={1}
@@ -564,20 +565,11 @@ export function Workstation(
                 <Text selectable style={{ ...typography.file, color: palette().ink }}>
                   {Reports.fileName(path())}
                 </Text>
-                <Text
-                  selectable
-                  style={{
-                    fontSize: 12,
-                    color:
-                      sourceStatus(p.category, path())?.status === "失败"
-                        ? palette().error
-                        : palette().muted,
-                  }}
-                >
-                  {sourceStatus(p.category, path())?.detail ||
-                    sourceStatus(p.category, path())?.status ||
-                    "等待处理"}
-                </Text>
+                <If when={sourceStatus(p.category, path())?.status === "失败"}>
+                  <Text selectable style={{ fontSize: 12, color: palette().error }}>
+                    {sourceStatus(p.category, path())?.detail}
+                  </Text>
+                </If>
                 <If when={isImage}>
                   <View style={{ flexDirection: "row", gap: 6 }}>
                     <Button quiet compact onPress={() => showPreview(p.category, index())}>
@@ -602,6 +594,16 @@ export function Workstation(
             </Button>
           </If>
         </If>
+        <CardProgress
+          category={p.category}
+          identity={`${current().id}\n${paths().join("\n")}`}
+          active={!!paths().length && current().processing().includes(p.category)}
+          failed={!!failures().length}
+          delay={
+            [...tableCategories, ...imageCategories, "日报模板", "简表模板"].indexOf(p.category) *
+            90
+          }
+        />
       </View>
     );
   }
@@ -624,6 +626,11 @@ export function Workstation(
         kind,
         dailyResultId: "",
         template: batch.files()[`${titles[kind]}模板`][0],
+        protectedFiles: batches().flatMap((other) =>
+          Object.entries(other.files())
+            .filter(([category]) => !(other === batch && category === `${titles[kind]}模板`))
+            .flatMap(([, paths]) => paths),
+        ),
         files: Object.entries(batch.files())
           .filter(([k]) => allowed.includes(k))
           .flatMap(([category, paths]) => paths.map((path) => ({ category, path }))),
@@ -668,6 +675,10 @@ export function Workstation(
         try {
           for (const job of jobs) {
             if (!alive) break;
+            batch.processing.set([
+              `${titles[job.kind]}模板`,
+              ...new Set(job.files.map((file) => file.category)),
+            ]);
             batch.message.set(`正在生成${titles[job.kind]}… 可添加其他加油站继续上传。`);
             try {
               if (job.kind === "simple") job.dailyResultId = completed.daily?.id || "";
@@ -685,14 +696,17 @@ export function Workstation(
           }
           batch.message.set(
             Object.keys(completed).length
-              ? "处理完成，可预览或导出表格。"
-              : "处理失败，请查看日志。",
+              ? errors.length
+                ? "部分报表已保存，请查看失败原因。"
+                : "处理完成，已保存到所选模板。"
+              : "处理失败，未保存报表，请查看日志。",
           );
           batch.error.set(errors.join("\n"));
           batch.phase.set(
             errors.length ? (Object.keys(completed).length ? "partial" : "failed") : "done",
           );
         } finally {
+          batch.processing.set([]);
           batch.busy.set(false);
           if (!alive) Reports.reset(batch.id);
         }
@@ -701,22 +715,6 @@ export function Workstation(
       running.set(false);
       if (alive) refresh();
       else Reports.setBusy(false);
-    }
-  }
-  async function save(kind: string) {
-    const batch = current();
-    const result = batch.results()[kind];
-    if (!result || batch.busy() || downloading()) return;
-    batch.busy.set(true);
-    batch.error.set("");
-    try {
-      const dest = await Reports.export(result.id, kind);
-      if (dest && alive) batch.message.set(`已导出：${dest}`);
-    } catch (e) {
-      if (alive) fail(e, batch);
-    } finally {
-      batch.busy.set(false);
-      if (!alive) Reports.reset(batch.id);
     }
   }
   function previewResult(kind: string) {
@@ -736,7 +734,7 @@ export function Workstation(
     if (batch.busy()) return;
     const choice = await AlertDialog.show({
       title: "重置当前加油站",
-      description: `清除「${batch.name()}」的文件和处理结果？其他加油站和原始文件会保留。`,
+      description: `清除「${batch.name()}」的文件选择和预览结果？已保存的报表、备份和其他加油站会保留。`,
       actions: [
         { label: "取消", role: "cancel", id: "cancel" },
         { label: "确认重置", role: "destructive", id: "reset" },
@@ -960,7 +958,10 @@ export function Workstation(
               />
             </View>
           </View>
-          <Section title="输出模板">
+          <Section title="报表文件">
+            <Text style={{ fontSize: 12, color: palette().muted }}>
+              计算成功后直接保存到所选模板，原文件备份在同目录的“报表备份”文件夹。
+            </Text>
             <UploadGrid categories={["日报模板", "简表模板"]} templates />
           </Section>
           <Section title="源表">
@@ -1053,17 +1054,11 @@ export function Workstation(
                   ? "正在处理…"
                   : running()
                     ? "加入处理队列"
-                    : "生成报表"}
+                    : "计算并保存"}
             </Button>
             <If when={current().phase() === "queued"}>
               <Button onPress={cancelQueued}>取消排队</Button>
             </If>
-            <Button disabled={busy() || !results().daily} onPress={() => save("daily")}>
-              导出日报
-            </Button>
-            <Button disabled={busy() || !results().simple} onPress={() => save("simple")}>
-              导出简表
-            </Button>
             <If when={!!results().daily}>
               <Button onPress={() => previewResult("daily")}>预览日报</Button>
             </If>

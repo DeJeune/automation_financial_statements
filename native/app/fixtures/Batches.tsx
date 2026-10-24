@@ -3,14 +3,15 @@ import { Reports } from "financial/native";
 import { mount, signal, View } from "nsh";
 import { Button } from "../controls";
 import { Workstation } from "../Workstation";
+import { template } from "./templates";
 
 const files = {
-  简表模板: ["native/app/fixtures/simple.xlsx"],
+  简表模板: [template()],
   油品时间统计: ["native/app/fixtures/stats.csv"],
   加油明细: ["native/app/fixtures/details.csv"],
   充值明细: ["native/app/fixtures/recharge.csv"],
 };
-const clipboard = signal([files.简表模板[0]]);
+const clipboard = signal([template()]);
 const release = signal<(() => void) | null>(null);
 let releasePaste: (() => void) | null = null;
 const delayPaste = signal(false);
@@ -18,7 +19,9 @@ mount(() => (
   <View style={{ flex: 1 }}>
     <View style={{ flexDirection: "row", gap: 6 }}>
       {Object.entries(files).map(([category, paths]) => (
-        <Button onPress={() => clipboard.set(paths)}>{`复制${category}`}</Button>
+        <Button onPress={() => clipboard.set(category.endsWith("模板") ? [template()] : paths)}>
+          {`复制${category}`}
+        </Button>
       ))}
       <Button
         testID="release-job"

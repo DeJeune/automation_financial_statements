@@ -128,8 +128,10 @@ test("table preview and hover keyboard paste retain the original workflow", asyn
 test("simple report merges before and after price statistics through the native processor", async () => {
   const app = await open("./fixtures/PriceChange.tsx", options);
   await app.press("id:calculate");
-  await app.waitFor("处理完成，可预览或导出表格。", { timeout: 15000 });
-  expect(app.enabled("导出简表")).toBe(true);
+  await app.waitFor("处理完成，已保存到所选模板。", { timeout: 15000 });
+  expect(app.shows("预览简表")).toBe(true);
+  expect(app.shows("导出简表")).toBe(false);
+  expect(app.shows("导出日报")).toBe(false);
   await app.press("预览简表");
   await app.waitFor("text:19");
   await app.press("关闭预览");
@@ -138,9 +140,9 @@ test("simple report merges before and after price statistics through the native 
 test("simple report receives the supermarket image and the completed daily result", async () => {
   const app = await open("./fixtures/Supermarket.tsx", options);
   await app.press("id:calculate");
-  await app.waitFor("处理完成，可预览或导出表格。");
-  expect(app.enabled("导出日报")).toBe(true);
-  expect(app.enabled("导出简表")).toBe(true);
+  await app.waitFor("处理完成，已保存到所选模板。");
+  expect(app.shows("预览日报")).toBe(true);
+  expect(app.shows("预览简表")).toBe(true);
 });
 
 test("independent report failures, previewed calculation and stale-result invalidation", async () => {
@@ -160,9 +162,9 @@ test("independent report failures, previewed calculation and stale-result invali
   app.dispose();
   const workflow = await open("./fixtures/Workflow.tsx", options);
   await workflow.press("id:calculate");
-  await workflow.waitFor("处理完成，可预览或导出表格。", { timeout: 15000 });
-  expect(workflow.enabled("导出简表")).toBe(true);
-  expect(workflow.enabled("导出日报")).toBe(false);
+  await workflow.waitFor("部分报表已保存，请查看失败原因。", { timeout: 15000 });
+  expect(workflow.shows("预览简表")).toBe(true);
+  expect(workflow.shows("预览日报")).toBe(false);
   await workflow.press("预览简表");
   await workflow.waitFor("text:510");
   expect(workflow.shows("text:保留")).toBe(true);
@@ -173,7 +175,7 @@ test("independent report failures, previewed calculation and stale-result invali
   await workflow.waitFor("id:gas-price");
   await workflow.clear("id:gas-price");
   await workflow.type("id:gas-price", "9.01");
-  expect(workflow.enabled("导出简表")).toBe(false);
+  expect(workflow.shows("预览简表")).toBe(false);
 }, 60000);
 
 test("clipboard file entries take priority over text and image representations", async () => {
@@ -247,9 +249,21 @@ test("copied file entries upload through the keyboard even when their text is no
 test("a running batch allows another upload, queued edits and independent results", async () => {
   const app = await open("./fixtures/Batches.tsx", options);
   const firstDate = app.value("id:date");
+  expect(app.shows("id:card-progress-简表模板")).toBe(false);
   await app.press("id:calculate");
   await app.waitFor("text:加油站 1 · 处理中");
+  for (const category of ["简表模板", "油品时间统计", "加油明细", "充值明细"]) {
+    await app.waitFor(`id:card-progress-${category}`);
+    expect(app.shows(`id:slot-${category} >> text:/处理中|校验中|识别中|%/`)).toBe(false);
+  }
+  expect(app.shows("id:card-progress-国通1")).toBe(false);
+  expect(app.shows("id:card-progress-日报模板")).toBe(false);
+  // The mask leaves the card's preview and management controls usable.
+  await app.press("id:manage-油品时间统计");
+  expect(app.shows("id:slot-油品时间统计 >> text:等待处理")).toBe(false);
+  await app.press("id:manage-油品时间统计");
   await app.press("id:new-batch");
+  expect(app.shows("id:card-progress-油品时间统计")).toBe(false);
   expect(app.value("id:gas-price")).toBe("8.23");
   await app.clear("id:gas-price");
   await app.type("id:gas-price", "9.01");
@@ -264,37 +278,41 @@ test("a running batch allows another upload, queued edits and independent result
   await app.press("id:parameters-toggle");
   await app.press("id:calculate");
   await app.waitFor("text:加油站 2 · 排队中");
+  expect(app.shows("id:card-progress-简表模板")).toBe(false);
   expect(app.enabled("id:upload-简表模板")).toBe(false);
   await app.press("取消排队");
   expect(app.enabled("id:upload-简表模板")).toBe(true);
   await app.press("id:calculate");
   await app.press("id:batch-1");
+  await app.waitFor("id:card-progress-简表模板");
   expect(app.value("id:gas-price")).toBe("8.23");
   expect(app.value("id:date")).toBe(firstDate);
   await app.press("id:new-batch");
   await app.press("id:release-job");
-  await app.waitFor("text:加油站 1 · 可导出", { timeout: 15000 });
+  await app.waitFor("text:加油站 1 · 已保存", { timeout: 15000 });
   await app.waitFor("text:加油站 2 · 处理中");
-  expect(app.enabled("导出简表")).toBe(false);
+  expect(app.shows("预览简表")).toBe(false);
   app.onDialog(() => "确认重置");
   await app.press("重置当前加油站");
   await app.press("id:batch-1");
-  expect(app.enabled("导出简表")).toBe(true);
+  await app.waitFor("id:card-progress-简表模板", { state: "gone" });
+  expect(app.shows("预览简表")).toBe(true);
   await app.press("预览简表");
   await app.waitFor("text:510");
   await app.press("关闭预览");
   await app.press("id:release-job");
-  await app.waitFor("text:加油站 2 · 可导出", { timeout: 15000 });
+  await app.waitFor("text:加油站 2 · 已保存", { timeout: 15000 });
   await app.press("id:batch-2");
+  await app.waitFor("id:card-progress-简表模板", { state: "gone" });
   expect(app.value("id:gas-price")).toBe("9.01");
   expect(app.value("id:date")).toBe("2026-10-21");
   await app.press("预览简表");
   await app.waitFor("text:200");
   await app.press("关闭预览");
   await app.press("重置当前加油站");
-  expect(app.enabled("导出简表")).toBe(false);
+  expect(app.shows("预览简表")).toBe(false);
   await app.press("id:batch-1");
-  expect(app.enabled("导出简表")).toBe(true);
+  expect(app.shows("预览简表")).toBe(true);
   await app.press("预览简表");
   await app.waitFor("text:510");
   await app.press("关闭预览");
@@ -315,7 +333,7 @@ test("late pasted files and failed jobs stay with their original batch", async (
   await app.waitFor("text:加油站 2 · 排队中");
   await app.press("id:batch-3");
   await app.press("id:release-job");
-  await app.waitFor("text:加油站 1 · 可导出", { timeout: 15000 });
+  await app.waitFor("text:加油站 1 · 已保存", { timeout: 15000 });
   await app.waitFor("text:加油站 2 · 处理中");
   await app.press("id:release-job");
   await app.waitFor("text:加油站 2 · 失败", { timeout: 15000 });
@@ -327,7 +345,7 @@ test("late pasted files and failed jobs stay with their original batch", async (
   await app.press("id:close-batch-2");
   await app.waitFor("id:batch-2", { state: "gone" });
   await app.press("id:batch-1");
-  expect(app.enabled("导出简表")).toBe(true);
+  expect(app.shows("预览简表")).toBe(true);
 }, 60000);
 
 test("removing stations requires confirmation, preserves selection and keeps a fresh last station", async () => {
@@ -363,7 +381,7 @@ test("closing a new tab does not stop a running batch, and closing its results r
   await app.waitFor("id:batch-2", { state: "gone" });
   expect(app.shows("id:batch-2")).toBe(false);
   await app.press("id:release-job");
-  await app.waitFor("text:加油站 1 · 可导出", { timeout: 15000 });
+  await app.waitFor("text:加油站 1 · 已保存", { timeout: 15000 });
   await app.press("id:new-batch");
   app.onDialog(() => "取消");
   await app.press("id:close-batch-1");
@@ -385,7 +403,7 @@ test("fixed stations persist names, prices, selection and removal without yester
   await first.clear("id:date");
   await first.type("id:date", "2001-01-01");
   await first.press("id:calculate");
-  await first.waitFor("text:城东站 · 可导出", { timeout: 15000 });
+  await first.waitFor("text:城东站 · 已保存", { timeout: 15000 });
   await first.press("id:new-batch");
   await first.clear("id:batch-name");
   await first.type("id:batch-name", "城西站");
@@ -408,7 +426,7 @@ test("fixed stations persist names, prices, selection and removal without yester
   expect(reopened.value("id:gas-price")).toBe("8.51");
   expect(reopened.value("id:date")).not.toBe("2001-01-01");
   expect(reopened.shows("text:stats.csv")).toBe(false);
-  expect(reopened.shows("text:城东站 · 可导出")).toBe(false);
+  expect(reopened.shows("text:城东站 · 已保存")).toBe(false);
   reopened.onDialog(() => "取消");
   await reopened.press("id:close-batch-2");
   expect(reopened.shows("id:batch-2")).toBe(true);

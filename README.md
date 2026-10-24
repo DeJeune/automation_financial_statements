@@ -2,7 +2,7 @@
 
 This project automates the processing and analysis of financial statements using Large Language Models.
 
-支持独立上传日报模板与 T-CD 简表模板，可共用源数据同时填写并分别导出。简表上传油品时间统计、加油明细、充值明细即可填写并交叉校验，油品优惠表可选，详见 [简表填写说明](docs/simple-report.md)。
+支持独立选择日报模板与 T-CD 简表模板，可共用源数据同时填写。原生桌面版计算成功后直接保存到所选模板，并在同目录的“报表备份”文件夹保留写入前原件，无需导出。简表上传油品时间统计、加油明细、充值明细即可填写并交叉校验，油品优惠表可选，详见 [简表填写说明](docs/simple-report.md)。
 
 ## 原生桌面版（NSH + Rust）
 
@@ -32,7 +32,7 @@ Windows 在 PowerShell 执行 `./scripts/bootstrap-native.ps1`，随后使用 `n
 
 CI 先执行 `./scripts/bootstrap-native.sh --prepare-only`（Windows 为 `./scripts/bootstrap-native.ps1 -PrepareOnly`）下载、校验并修补 NSH 源码，再恢复 Rust 缓存，最后执行不带参数的引导脚本编译 CLI。仅准备源码时不需要 Rust。三个依赖私有附件的 Rust 测试默认标为忽略；在 `.context/attachments` 中提供对应样本后，执行 `cargo test --locked --manifest-path native/Cargo.toml -p financial-engine --test regression -- --ignored` 显式验证，缺少样本会报错。
 
-界面保留完整日期、上班/交班时间、油价、日报与简表独立模板、多张平台截图、文件预览、日志和分别导出。 点击“添加加油站”可在当前加油站后台处理时，继续上传另一日期或加油站的文件；各加油站标签支持命名、切换、排队、取消排队和独立重置，已完成结果分别导出，标签上的 × 用于关闭。后台任务按队列顺序执行，延续现有截图识别限流；状态仅保存在本次应用会话中。配置支持原有 `GEMINI_API_KEY`、`GEMINI_BASE_URL`、`GEMINI_MODEL` 环境变量及 `.env`，也可以在设置页保存。默认油价为 8.23，国通为可选。日志和设置保存在系统用户数据目录的 `Financial Automation` 下；清除日志按钮仅清空当前显示。
+界面保留完整日期、上班/交班时间、油价、日报与简表独立模板、多张平台截图、文件预览和日志。点击“计算并保存”后，每张报表独立计算、备份并原子保存回所选模板，成功后可预览；失败不覆盖原文件。模板不能与源数据或其他站点的报表共用同一文件。点击“添加加油站”可在当前加油站后台处理时继续上传其他文件，各站点支持命名、切换、排队、取消排队和独立重置，标签上的 × 用于关闭。重置和关闭标签只清理文件选择及临时预览，不删除已保存报表和备份。后台任务按队列顺序执行，延续现有截图识别限流。配置支持原有 `GEMINI_API_KEY`、`GEMINI_BASE_URL`、`GEMINI_MODEL` 环境变量及 `.env`，也可以在设置页保存。默认油价为 8.23，国通为可选。日志和设置保存在系统用户数据目录的 `Financial Automation` 下；清除日志按钮仅清空当前显示。
 
 ## Project Structure
 ```
