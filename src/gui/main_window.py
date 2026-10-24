@@ -483,13 +483,13 @@ class MainWindow(QMainWindow):
         simple_layout.addWidget(self.simple_count_divisor)
         self.simple_closing_balance = QLineEdit()
         self.simple_closing_balance.setPlaceholderText('可选，填截图中期末余额的合计')
-        simple_layout.addWidget(QLabel('期末余额合计：'))
+        simple_layout.addWidget(QLabel('新系统卡余额合计：'))
         simple_layout.addWidget(self.simple_closing_balance)
         self.simple_options.hide()
         date_time_layout.addWidget(self.simple_options)
         self.simple_hint = QLabel(
             '简表需油品时间统计、加油明细、充值明细；油品优惠表可选。'
-            '期末余额合计由截图读取后输入，折算后按约定填入 G7；图片不自动识别。'
+            '新系统卡期末余额合计由截图读取后输入，折算后填入 G8；Python 对照版不自动识别余额图片。'
             '未说明字段保留模板原值。请核对日期和折算除数。')
         self.simple_hint.setWordWrap(True)
         self.simple_hint.hide()

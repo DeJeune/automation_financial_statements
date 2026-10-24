@@ -52,7 +52,8 @@ def test_simple_report_upload_process_and_repeat(tmp_path, monkeypatch, sources,
         assert not window.simple_pending_updates
         wb = openpyxl.load_workbook(window.simple_output_table_path)
         assert wb['Sheet1']['D11'].value == 164
-        assert wb['Sheet1']['G7'].value == 202792.61
+        assert wb['Sheet1']['G8'].value == 202792.61
+        assert wb['Sheet1']['G7'].value is None
         assert wb['Sheet1']['B3'].value == 10
         assert wb['Sheet1']['E3'].value == 0
         assert wb['Sheet1']['E3'].number_format == '0'

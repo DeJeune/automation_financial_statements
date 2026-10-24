@@ -281,6 +281,20 @@ pub fn write(template: &Path, output: &Path, updates: &Updates) -> Result<()> {
             Ok((name, path))
         })
         .collect::<Result<_>>()?;
+    let names = sheets
+        .keys()
+        .map(|name| name.to_string())
+        .collect::<Vec<_>>();
+    let mut targets = BTreeMap::new();
+    for sheet in updates.keys() {
+        let actual = sheet_name(&names, sheet)?;
+        let target = sheets[actual.as_str()].clone();
+        ensure!(
+            !targets.values().any(|path| path == &target),
+            "多个更新指向同一工作表：{actual}"
+        );
+        targets.insert(sheet, target);
+    }
     let styles_src = part("xl/styles.xml")?;
     let style_doc = Document::parse(styles_src)?;
     let xfs = style_doc
@@ -291,11 +305,7 @@ pub fn write(template: &Path, output: &Path, updates: &Updates) -> Result<()> {
     let mut style_map = BTreeMap::new();
     let mut added = String::new();
     for (sheet, update) in updates {
-        let src = part(
-            sheets
-                .get(sheet.as_str())
-                .with_context(|| format!("模板缺少工作表：{sheet}"))?,
-        )?;
+        let src = part(&targets[sheet])?;
         let d = Document::parse(src)?;
         for (address, fmt) in &update.formats {
             let old = d
@@ -329,7 +339,7 @@ pub fn write(template: &Path, output: &Path, updates: &Updates) -> Result<()> {
         );
     }
     for (sheet, update) in updates {
-        let path = sheets[sheet.as_str()].clone();
+        let path = targets[sheet].clone();
         replacements.insert(path.clone(), sheet_xml(part(&path)?, update, &style_map)?);
     }
     if let Some(calc) = doc.descendants().find(|n| n.has_tag_name("calcPr")) {
@@ -382,6 +392,22 @@ pub fn write(template: &Path, output: &Path, updates: &Updates) -> Result<()> {
     Ok(())
 }
 
+/// Prefer exact names; accept one unambiguous whitespace-only variation.
+pub fn sheet_name(names: &[String], expected: &str) -> Result<String> {
+    if names.iter().any(|name| name == expected) {
+        return Ok(expected.to_owned());
+    }
+    let matches: Vec<_> = names
+        .iter()
+        .filter(|name| crate::source::label(name) == crate::source::label(expected))
+        .collect();
+    ensure!(matches.len() <= 1, "工作表名称不明确：{expected}");
+    matches
+        .first()
+        .map(|name| (*name).clone())
+        .with_context(|| format!("模板缺少工作表：{expected}"))
+}
+
 pub fn simple_template_sheets(path: &Path) -> Result<(String, Option<String>)> {
     use calamine::Reader;
     let mut book = calamine::open_workbook_auto(path)?;
@@ -391,12 +417,16 @@ pub fn simple_template_sheets(path: &Path) -> Result<(String, Option<String>)> {
     let value = |range: &calamine::Range<calamine::Data>, r, c| {
         range
             .get_value((r, c))
-            .map(ToString::to_string)
+            .map(|v| crate::source::label(&v.to_string()))
             .unwrap_or_default()
     };
     ensure!(
-        value(&a, 0, 0).contains("数据简表") && value(&a, 12, 0) == "无卡次数",
-        "第一个工作表不是支持的数据简表"
+        value(&a, 12, 0) == "无卡次数"
+            && (value(&a, 0, 0).contains("数据简表")
+                || (value(&a, 11, 0) == "线充"
+                    && value(&a, 11, 2) == "线消"
+                    && value(&a, 12, 2) == "无卡金额")),
+        "第一个工作表未匹配简表的标题或线充、线消、无卡次数/金额布局"
     );
     // Other station templates have unrelated data on their second worksheet.
     // Only fill the optional detail page when its layout matches our mapping.

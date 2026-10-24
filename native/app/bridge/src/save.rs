@@ -13,10 +13,6 @@ pub fn write_back(template: &Path, frozen: &Path, report: &Path) -> Result<PathB
         "处理期间模板已被修改，请重新计算，未覆盖文件"
     );
     let permissions = fs::metadata(template)?.permissions();
-    ensure!(
-        !permissions.readonly(),
-        "模板为只读文件，请取消只读后重新计算"
-    );
     let parent = template.parent().context("模板目录不可用")?;
     let backup_dir = parent.join("报表备份");
     fs::create_dir_all(&backup_dir).context("无法创建模板备份目录，未覆盖文件")?;
@@ -35,22 +31,62 @@ pub fn write_back(template: &Path, frozen: &Path, report: &Path) -> Result<PathB
 
     let mut complete = tempfile::NamedTempFile::new_in(parent)?;
     std::io::copy(&mut fs::File::open(report)?, complete.as_file_mut())?;
-    complete.as_file().set_permissions(permissions)?;
+    complete
+        .as_file()
+        .set_permissions(writable_permissions(permissions.clone()))?;
     complete.as_file_mut().sync_all()?;
     ensure!(
         fs::read(template)? == original,
         "保存前模板已被修改，请重新计算，未覆盖文件"
     );
-    complete
-        .persist(template)
-        .map_err(|e| e.error)
-        .with_context(|| {
+    replace_template(template, complete, permissions)?;
+    Ok(backup_path)
+}
+
+fn writable_permissions(mut permissions: fs::Permissions) -> fs::Permissions {
+    if permissions.readonly() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            permissions.set_mode(permissions.mode() | 0o200);
+        }
+        #[cfg(not(unix))]
+        {
+            // Clears the Windows attribute; Unix only gains owner-write above.
+            #[allow(clippy::permissions_set_readonly_false)]
+            permissions.set_readonly(false);
+        }
+    }
+    permissions
+}
+
+fn replace_template(
+    template: &Path,
+    complete: tempfile::NamedTempFile,
+    original_permissions: fs::Permissions,
+) -> Result<()> {
+    let readonly = original_permissions.readonly();
+    if readonly {
+        fs::set_permissions(template, writable_permissions(original_permissions.clone()))
+            .context("无法解除模板的只读属性，请检查该文件的修改权限；未覆盖文件")?;
+    }
+    if let Err(error) = complete.persist(template) {
+        if readonly {
+            fs::set_permissions(template, original_permissions).with_context(|| {
+                format!(
+                    "保存失败且无法恢复模板的只读属性：{}；请检查文件权限",
+                    error.error
+                )
+            })?;
+        }
+        return Err(error.error).with_context(|| {
             format!(
-                "无法保存 {}，请关闭 Excel/WPS 后重新计算；原文件保持不变",
+                "无法保存 {}，请关闭 Excel/WPS 并检查目录权限后重新计算；原文件保持不变",
                 template.display()
             )
-        })?;
-    Ok(backup_path)
+        });
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -97,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn readonly_template_is_not_overwritten() {
+    fn readonly_template_becomes_writable_and_keeps_a_backup() {
         let root = tempfile::tempdir().unwrap();
         let target = root.path().join("日报.xlsx");
         let frozen = root.path().join("frozen.xlsx");
@@ -105,15 +141,41 @@ mod tests {
         fs::write(&target, b"original").unwrap();
         fs::write(&frozen, b"original").unwrap();
         fs::write(&report, b"complete").unwrap();
-        let original_permissions = fs::metadata(&target).unwrap().permissions();
-        let mut readonly = original_permissions.clone();
+        let mut readonly = fs::metadata(&target).unwrap().permissions();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            readonly.set_mode(0o440);
+        }
         readonly.set_readonly(true);
         fs::set_permissions(&target, readonly).unwrap();
-        let result = write_back(&target, &frozen, &report);
-        fs::set_permissions(&target, original_permissions).unwrap();
-        assert!(result.unwrap_err().to_string().contains("只读"));
+        let backup = write_back(&target, &frozen, &report).unwrap();
+        assert_eq!(fs::read(&target).unwrap(), b"complete");
+        assert_eq!(fs::read(backup).unwrap(), b"original");
+        let saved_permissions = fs::metadata(&target).unwrap().permissions();
+        assert!(!saved_permissions.readonly());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(saved_permissions.mode() & 0o777, 0o640);
+        }
+    }
+
+    #[test]
+    fn failed_report_does_not_change_readonly_template_permissions() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("日报.xlsx");
+        let frozen = root.path().join("frozen.xlsx");
+        fs::write(&target, b"original").unwrap();
+        fs::write(&frozen, b"original").unwrap();
+        let permissions = fs::metadata(&target).unwrap().permissions();
+        let mut readonly = permissions.clone();
+        readonly.set_readonly(true);
+        fs::set_permissions(&target, readonly).unwrap();
+        assert!(write_back(&target, &frozen, &root.path().join("missing.xlsx")).is_err());
         assert_eq!(fs::read(&target).unwrap(), b"original");
-        assert!(!root.path().join("报表备份").exists());
+        assert!(fs::metadata(&target).unwrap().permissions().readonly());
+        fs::set_permissions(&target, permissions).unwrap();
     }
 
     #[cfg(windows)]
@@ -134,5 +196,32 @@ mod tests {
             .unwrap();
         assert!(write_back(&target, &frozen, &report).is_err());
         assert_eq!(fs::read(target).unwrap(), b"original");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn readonly_attribute_is_restored_if_replacement_fails() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("简表.xlsx");
+        let frozen = root.path().join("frozen.xlsx");
+        let report = root.path().join("report.xlsx");
+        fs::write(&target, b"original").unwrap();
+        fs::write(&frozen, b"original").unwrap();
+        fs::write(&report, b"complete").unwrap();
+        let permissions = fs::metadata(&target).unwrap().permissions();
+        let mut readonly = permissions.clone();
+        readonly.set_readonly(true);
+        fs::set_permissions(&target, readonly).unwrap();
+        let locked = fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1 | 2)
+            .open(&target)
+            .unwrap();
+        assert!(write_back(&target, &frozen, &report).is_err());
+        assert_eq!(fs::read(&target).unwrap(), b"original");
+        assert!(fs::metadata(&target).unwrap().permissions().readonly());
+        drop(locked);
+        fs::set_permissions(&target, permissions).unwrap();
     }
 }

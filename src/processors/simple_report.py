@@ -1,6 +1,6 @@
 """Fill the supplied T-CD simple report from station exports."""
 
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -70,8 +70,8 @@ class SimpleReportProcessor:
             stats.attrs['period'] = (min(part.attrs['period'][0] for part in statistics),
                                      max(part.attrs['period'][1] for part in statistics))
         details = numeric(read_source(paths['加油明细'],
-            ['油品', '单价', '升数', '油机金额', '结算金额', '优惠金额', '收款方式', 'IC卡余额']),
-            ['单价', '升数', '油机金额', '结算金额', '优惠金额', 'IC卡余额'])
+            ['油品', '单价', '升数', '油机金额', '结算金额', '优惠金额', '收款方式', '实收金额']),
+            ['单价', '升数', '油机金额', '结算金额', '优惠金额'])
         discounts = read_discounts(paths['油品优惠']) if '油品优惠' in paths else None
         recharge = numeric(read_source(paths['充值明细'],
             ['原余额', '充值金额', '充值赠送', '付款方式']), ['原余额', '充值金额', '充值赠送'])
@@ -84,13 +84,13 @@ class SimpleReportProcessor:
         self._consumption_cells(details, first)
         self._recharge_cells(recharge, first)
         if self.closing_balance is not None:
-            first['G7'] = self.closing_balance
+            first['G8'] = self.closing_balance
         return {
             'updates': [
                 {'sheet': 'Sheet1', 'cells': first,
                  'number_formats': {**{f'E{row}': '0' for row in range(3, 7)},
                                     'B8': '0.00', 'B9': '0.00', 'B13': '0',
-                                    **({'G7': '0.00'} if self.closing_balance is not None else {})}},
+                                    **({'G8': '0.00'} if self.closing_balance is not None else {})}},
                 {'sheet': 'Sheet2', 'cells': second},
             ],
             'processed_data': {
@@ -101,11 +101,11 @@ class SimpleReportProcessor:
                 '时间统计': '已合并调价前、调价后统计' if len(statistics) > 1 else '使用调价前统计',
                 '交叉校验': ('逐油品升数、油机金额、次数和优惠一致' if discounts is not None
                          else '逐油品升数、油机金额、次数一致；未提供优惠表，优惠栏保留原值'),
-                '消费口径': 'D11=充值卡、电子卡结算金额分别折算取两位后相加；D12=电子卡结算金额；D13=优惠金额及IC卡余额为零、结算非零的92/95汽油结算金额，排除回罐收款。',
-                '充值口径': 'D8/D9=原余额为零/非零的现金、微信、支付宝充值金额含赠送，保留负数；B12=微信/支付宝充值本金。',
+                '消费口径': 'D11=充值卡、电子卡结算金额分别折算取两位后相加；D12=电子卡结算金额；D13=优惠金额为零、结算非零的92/95汽油实收金额，不筛选余额，排除回罐收款。',
+                '充值口径': 'D8/D9=原余额为零/非零的现金、微信、支付宝充值金额含赠送，保留负数；B12=与日报相同的微信/支付宝充值金额加赠送。',
                 '次数口径': '油品次数、无卡次数折算后取整数；新次数只计原余额为零且有上述付款方式的记录；旧次数计全部明细（含开户、撤单），折算取两位。',
-                '余额': ('期末余额合计已折算填入 G7' if self.closing_balance is not None
-                       else '未输入截图期末余额合计，G7 保留原值'),
+                '余额': ('新系统卡期末余额合计已折算填入 G8' if self.closing_balance is not None
+                       else '未输入新系统卡期末余额合计，G8 保留原值'),
                 '待核对': '未说明字段不计算、不覆盖：新会、积分、洗车、超市、充值面额明细及汽柴油充值分类、平台优惠等均保留模板原值。',
             },
         }
@@ -230,24 +230,24 @@ class SimpleReportProcessor:
                      G31='=IF(A31=0,0,F31/A31)', G34='=IF(A34=0,0,F34/A34)')
 
     def _consumption_cells(self, details, cells) -> None:
-        """Use settlement amounts for all consumption metrics."""
+        """Use settlement for card spending and actual receipts for no-card spending."""
         card_totals = [rounded(total(details.loc[details['收款方式'] == method,
                                                '结算金额']) / self.money_scale)
                        for method in ('充值卡收款', '电子卡收款')]
         cells['D11'] = float(total(card_totals))
         cells['D12'] = card_totals[1]
         no_card = details.loc[(details['优惠金额'] == 0) & (details['结算金额'] != 0)
-                              & (details['IC卡余额'] == 0)
                               & details['油品'].isin(['92#汽油', '95#汽油'])
-                              & (details['收款方式'] != '回罐收款')]
+                              & ~details['收款方式'].isin(['回罐收款', '回灌收款'])]
+        no_card = numeric(no_card, ['实收金额'])
         cells['B13'] = rounded(Decimal(len(no_card)) / self.count_scale, 0)
-        cells['D13'] = rounded(total(no_card['结算金额']) / self.money_scale)
+        cells['D13'] = rounded(total(no_card['实收金额']) / self.money_scale)
         cells.update(F11='=IF(D6=0,0,D11/D6)', F12='=IF(D6=0,0,D12/D6)')
 
     def _recharge_cells(self, recharge, first) -> None:
         """Match the verified sample, including signed amounts and recharge gifts."""
         accepted = recharge['付款方式'].isin(['现金收款', '微信收款', '支付宝收款'])
-        online = recharge['付款方式'].isin(['微信收款', '支付宝收款'])
+        online = recharge['付款方式'].str.contains('微信|支付宝', na=False)
         new = recharge.loc[accepted & (recharge['原余额'] == 0)]
         old = recharge.loc[accepted & (recharge['原余额'] != 0)]
         first['B8'] = rounded(Decimal(len(new)) / self.count_scale) if len(new) else None
@@ -255,4 +255,5 @@ class SimpleReportProcessor:
         first['B9'] = rounded(Decimal(len(recharge)) / self.count_scale)
         first['D8'] = rounded((total(new['充值金额']) + total(new['充值赠送'])) / self.money_scale) if len(new) else None
         first['D9'] = rounded((total(old['充值金额']) + total(old['充值赠送'])) / self.money_scale)
-        first['B12'] = rounded(total(recharge.loc[online, '充值金额']) / self.money_scale)
+        amount = total(recharge.loc[online, '充值金额']) + total(recharge.loc[online, '充值赠送'])
+        first['B12'] = float((amount / self.money_scale).quantize(Decimal('.01'), rounding=ROUND_HALF_EVEN))

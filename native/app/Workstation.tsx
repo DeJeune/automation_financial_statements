@@ -31,6 +31,7 @@ import {
 } from "./controls";
 import { Preview, type PreviewRequest } from "./Preview";
 
+const balanceCategory = "新系统卡余额";
 const imageCategories = [
   "国通1",
   "国通2",
@@ -40,6 +41,7 @@ const imageCategories = [
   "POS",
   "超市销售收入",
   "抖音",
+  balanceCategory,
 ];
 const tableCategories = [
   "油品时间统计",
@@ -340,6 +342,8 @@ export function Workstation(
     if (!paths.length) return;
     const kind = categoryKind(category);
     if (kind !== "image" && paths.length > 1) throw new Error("每个表格位置请选择一个文件。");
+    if (category === balanceCategory && paths.length > 1)
+      throw new Error("新系统卡余额请选择一张合计截图，避免重复累计。");
     const validated: string[] = [];
     for (const path of paths) validated.push(await Reports.validateFile(path, kind));
     if (!alive) return;
@@ -358,7 +362,10 @@ export function Workstation(
     invalidate(batch);
     batch.files.update((f) => ({
       ...f,
-      [category]: kind === "image" ? [...(f[category] || []), ...validated] : validated,
+      [category]:
+        kind === "image" && category !== balanceCategory
+          ? [...(f[category] || []), ...validated]
+          : validated,
     }));
   }
   async function upload(category: string, read: (batch: Batch) => Promise<string[]>) {
@@ -467,6 +474,7 @@ export function Workstation(
       expanded = signal(false);
     const paths = () => files()[p.category] || [];
     const isImage = imageCategories.includes(p.category);
+    const multipleImages = isImage && p.category !== balanceCategory;
     const failures = () =>
       paths().filter((path) => sourceStatus(p.category, path)?.status === "失败");
     const hint = () => {
@@ -506,7 +514,7 @@ export function Workstation(
       >
         <NativeButton
           testID={`upload-${p.category}`}
-          accessibilityLabel={`${paths().length ? (isImage ? "添加" : "替换") : "上传"}${p.category}`}
+          accessibilityLabel={`${paths().length ? (multipleImages ? "添加" : "替换") : "上传"}${p.category}`}
           disabled={busy()}
           onPress={() => choose(p.category)}
           style={{ padding: 4, gap: 5, borderRadius: 4 }}
@@ -527,7 +535,7 @@ export function Workstation(
             style={{ ...typography.file, color: palette().muted }}
           >
             {paths().length
-              ? isImage
+              ? multipleImages
                 ? `${paths().length} 张图片 · 点击继续添加`
                 : Reports.fileName(paths()[0])
               : "+ 点击上传或拖入文件"}
@@ -619,8 +627,11 @@ export function Workstation(
     const jobs = kinds.map((kind): Job => {
       const allowed =
         kind === "simple"
-          ? [...tableCategories.slice(0, 5), "超市销售收入"]
-          : [...tableCategories, ...imageCategories];
+          ? [...tableCategories.slice(0, 5), "超市销售收入", balanceCategory]
+          : [
+              ...tableCategories,
+              ...imageCategories.filter((category) => category !== balanceCategory),
+            ];
       return {
         batchId: batch.id,
         kind,
@@ -640,7 +651,7 @@ export function Workstation(
         gasPrice: batch.gasPrice(),
         divisor: batch.divisor(),
         countDivisor: batch.countDivisor(),
-        balance: batch.balance(),
+        balance: batch.files()[balanceCategory]?.length ? "" : batch.balance(),
         apiKey: apiKey(),
         apiBase: apiBase(),
         model: model(),
@@ -967,7 +978,7 @@ export function Workstation(
           <Section title="源表">
             <UploadGrid categories={tableCategories.slice(0, 4)} />
           </Section>
-          <Section title="平台截图（可选）">
+          <Section title="截图（可选）">
             <UploadGrid categories={imageCategories} />
           </Section>
           <Label>文件可拖入对应位置；截图可添加多张，鼠标移到上传块后按 Ctrl / ⌘ + V 粘贴。</Label>
@@ -1009,10 +1020,10 @@ export function Workstation(
                 />
                 <Field
                   testID="balance"
-                  label="期末余额合计（可选）"
+                  label="新系统卡余额（无截图时手填）"
                   value={balance()}
                   onChange={(v) => change((next) => balance.set(next), v)}
-                  disabled={busy()}
+                  disabled={busy() || !!files()[balanceCategory]?.length}
                 />
               </View>
             </Section>
@@ -1123,7 +1134,7 @@ export function Workstation(
             <If when={!!settingsMessage()}>
               <Label>{settingsMessage()}</Label>
             </If>
-            <Label>上传的平台截图通过此服务识别。Excel 文件在本机处理。</Label>
+            <Label>上传的截图通过此服务识别。Excel 文件在本机处理。</Label>
             <Field
               label="Gemini API 地址"
               value={apiBase()}

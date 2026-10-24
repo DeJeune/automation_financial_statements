@@ -125,6 +125,35 @@ test("table preview and hover keyboard paste retain the original workflow", asyn
   expect(app.enabled("id:calculate")).toBe(true);
 });
 
+test("new system balance card accepts keyboard paste and replaces the previous image", async () => {
+  const app = await open("./fixtures/Clipboard.tsx", {
+    ...options,
+    clipboard: "./native/app/fixtures/receipt.png",
+  });
+  await app.hover("id:slot-新系统卡余额");
+  await app.keyboard.press("mod+v");
+  await app.waitFor("id:slot-新系统卡余额 >> text:receipt.png");
+  expect(app.shows("label:替换新系统卡余额")).toBe(true);
+  await app.press("id:slot-新系统卡余额 >> text:粘贴");
+  expect(app.count("id:slot-新系统卡余额 >> text:receipt.png")).toBe(1);
+  await app.press("id:slot-新系统卡余额 >> text:预览");
+  await app.waitFor("关闭预览");
+  await app.press("关闭预览");
+  await app.press("id:manage-新系统卡余额");
+  await app.press("id:slot-新系统卡余额 >> text:移除");
+  await app.waitFor("id:slot-新系统卡余额 >> text:receipt.png", { state: "gone" });
+});
+
+test("new system balance card rejects multiple total screenshots in one paste", async () => {
+  const app = await open("./fixtures/Clipboard.tsx", {
+    ...options,
+    clipboard: "files:./native/app/fixtures/receipt.png\n./native/app/fixtures/receipt.png",
+  });
+  await app.press("id:slot-新系统卡余额 >> text:粘贴");
+  await app.waitFor("text:/请选择一张合计截图/");
+  expect(app.shows("id:slot-新系统卡余额 >> text:receipt.png")).toBe(false);
+});
+
 test("simple report merges before and after price statistics through the native processor", async () => {
   const app = await open("./fixtures/PriceChange.tsx", options);
   await app.press("id:calculate");
@@ -422,6 +451,9 @@ test("fixed stations persist names, prices, selection and removal without yester
   expect(reopened.value("id:batch-name")).toBe("城西站");
   expect(reopened.value("id:gas-price")).toBe("9.12");
   await reopened.press("id:batch-1");
+  await reopened.waitUntil(
+    () => reopened.value("id:batch-name") === "城东站" && reopened.value("id:gas-price") === "8.51",
+  );
   expect(reopened.value("id:batch-name")).toBe("城东站");
   expect(reopened.value("id:gas-price")).toBe("8.51");
   expect(reopened.value("id:date")).not.toBe("2001-01-01");
@@ -437,6 +469,7 @@ test("fixed stations persist names, prices, selection and removal without yester
     () => !Reports.stations().stations.some((station) => station.number === 2),
   );
   const last = await open("./App.tsx", options);
+  await last.waitUntil(() => last.value("id:batch-name") === "城东站");
   expect(last.shows("id:batch-2")).toBe(false);
   expect(last.value("id:batch-name")).toBe("城东站");
   expect(last.value("id:gas-price")).toBe("8.51");

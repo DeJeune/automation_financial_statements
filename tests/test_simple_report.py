@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 
 import openpyxl
+import pandas as pd
 import pytest
 from openpyxl.styles import PatternFill
 
@@ -95,13 +96,13 @@ def price_change_sources(sources, tmp_path):
     ])
     write_export(sources['加油明细'], [
         ['加油明细'], [full],
-        ['油品', '单价', '升数', '油机金额', '结算金额', '优惠金额', '收款方式', 'IC卡余额', '加油完成时间'],
-        ['0#柴油', 8, 30.01, 240.08, 240.08, 0, '现金收款', 0, '2026-10-16 19:00:00'],
-        ['0#柴油', 9, 30.01, 270.09, 270.09, 0, '现金收款', 0, '2026-10-16 20:00:00'],
-        ['92#汽油', 9, 3.01, 27.09, 27.09, 0, '现金收款', 0, '2026-10-16 19:00:00'],
-        ['92#汽油', 10, 3.01, 30.10, 30.10, 0, '现金收款', 0, '2026-10-16 20:00:00'],
-        ['95#汽油', 10, 6.01, 60.10, 60.10, 0, '现金收款', 0, '2026-10-16 19:00:00'],
-        ['95#汽油', 11, 6.01, 66.11, 66.11, 0, '现金收款', 0, '2026-10-16 20:00:00'],
+        ['油品', '单价', '升数', '油机金额', '结算金额', '优惠金额', '收款方式', 'IC卡余额', '加油完成时间', '实收金额'],
+        ['0#柴油', 8, 30.01, 240.08, 240.08, 0, '现金收款', 0, '2026-10-16 19:00:00', 240.08],
+        ['0#柴油', 9, 30.01, 270.09, 270.09, 0, '现金收款', 0, '2026-10-16 20:00:00', 270.09],
+        ['92#汽油', 9, 3.01, 27.09, 27.09, 0, '现金收款', 0, '2026-10-16 19:00:00', 27.09],
+        ['92#汽油', 10, 3.01, 30.10, 30.10, 0, '现金收款', 0, '2026-10-16 20:00:00', 30.10],
+        ['95#汽油', 10, 6.01, 60.10, 60.10, 0, '现金收款', 0, '2026-10-16 19:00:00', 60.10],
+        ['95#汽油', 11, 6.01, 66.11, 66.11, 0, '现金收款', 0, '2026-10-16 20:00:00', 66.11],
     ])
     sources.pop('油品优惠')
     return sources
@@ -128,9 +129,9 @@ def test_same_price_splits_preserve_original_algorithm(sources, tmp_path, shift_
     sources['油品时间统计(调价后)'] = write_export(tmp_path / 'after.xlsx', [
         header, [14, 9, '92#汽油', 315.02, 2739.85, 1]])
     write_export(sources['加油明细'], [
-        ['油品', '单价', '升数', '油机金额', '结算金额', '优惠金额', '收款方式', 'IC卡余额'],
-        ['92#汽油', 8.7, 123.65, 1075.73, 1075.73, 0, '现金收款', 0],
-        ['92#汽油', 8.7, 315.02, 2739.85, 2739.85, 0, '现金收款', 0]])
+        ['油品', '单价', '升数', '油机金额', '结算金额', '优惠金额', '收款方式', 'IC卡余额', '实收金额'],
+        ['92#汽油', 8.7, 123.65, 1075.73, 1075.73, 0, '现金收款', 0, 1075.73],
+        ['92#汽油', 8.7, 315.02, 2739.85, 2739.85, 0, '现金收款', 0, 2739.85]])
     sources.pop('油品优惠')
     first = SimpleReportProcessor(shift_config).build_updates(sources)['updates'][0]['cells']
     assert (first['B4'], first['D4'], first['E4']) == (146.22, 1272.11, 1)
@@ -175,7 +176,7 @@ def test_four_sources_reconcile_and_map(sources, shift_config):
     assert first['B12'] == 400
     assert first['D9'] == 510  # Accepted payments include recharge gifts.
     assert first['B9'] == 1.33  # Includes the account-opening record.
-    assert first['D13'] == 100  # All consumption uses settlement, including no-card.
+    assert first['D13'] == 96.67  # No-card uses actual receipts (290 / 3).
     assert first['B13'] == 0  # Scaled counts round to a whole number.
     assert result['processed_data']['折算'] == '金额/升数 ÷ 3；次数 ÷ 3'
     assert 'A13' not in second  # Unspecified recharge-denomination cells stay untouched.
@@ -278,6 +279,20 @@ def test_zero_activity_clears_old_values(sources, shift_config):
     assert second['D31'] == second['D34'] == 0
 
 
+def test_online_recharge_includes_gifts_refunds_and_payment_labels(sources, shift_config):
+    processor = SimpleReportProcessor(shift_config)
+    recharge = pd.DataFrame([
+        [100, 18144, 240, '微信收款'],
+        [100, 3700, 0, '支付宝收款'],
+        [100, -300, -30, '微信退款'],
+        [100, 600, 30, '线上支付宝收款'],
+        [100, 999, 99, '现金收款'],
+    ], columns=['原余额', '充值金额', '充值赠送', '付款方式'])
+    cells = {}
+    processor._recharge_cells(recharge, cells)
+    assert cells['B12'] == 7461.33
+
+
 def test_signed_recharge_and_new_account(sources, shift_config):
     path = sources['充值明细']
     wb = openpyxl.load_workbook(path)
@@ -326,54 +341,64 @@ def test_machine_rounding_before_fuel_total(sources, shift_config, machines, lit
     assert first['E4'] == 1
 
 
-def test_no_card_filter_and_settlement(sources, shift_config):
+def test_no_card_uses_actual_receipts_ignores_balance_and_excludes_tank_returns(sources, shift_config):
     write_export(sources['油品时间统计'], [
         ['机号', '油品', '加油升', '加油元', '次数'],
-        [1, '0#柴油', 10, 80, 1], [2, '92#汽油', 40, 360, 4], [3, '95#汽油', 20, 200, 2],
+        [1, '0#柴油', 10, 80, 1], [2, '92#汽油', 40, 360, 4], [3, '95#汽油', 30, 300, 3],
     ])
     write_export(sources['加油明细'], [
         ['流水号', '油品', '升数', '油机金额', '结算金额', '优惠金额', '收款方式', '单价', '实收金额', 'IC卡余额', '卡号'],
         [1, '0#柴油', 10, 80, 80, 0, '现金收款', 8, 70, 0, 0],  # Diesel excluded.
         [2, '92#汽油', 10, 90, 0, 0, '现金收款', 9, 0, 0, 0],  # Zero settlement excluded.
         [3, '92#汽油', 10, 90, 85, 5, '现金收款', 9, 80, 0, 0],  # Discount excluded.
-        [4, '95#汽油', 10, 100, 100, 0, '充值卡收款', 10, 93, 0, 0],
-        [5, '92#汽油', 10, 90, 90, 0, '现金收款', 9, 90, 10, 0],  # Balance excludes cash too.
+        [4, '95#汽油', 10, 100, 100, 0, '充值卡收款', 10, 93, 200, 0],
+        [5, '92#汽油', 10, 90, 90, 0, '现金收款', 9, 90, 10, 0],  # Balance does not affect eligibility.
         [6, '95#汽油', 10, 100, 100, 0, '回罐收款  ', 10, 100, 0, 9321],
         [7, '92#汽油', 10, 90, 90, 0, '现金收款', 9, 90, 0, 123],  # Card number is not the filter.
+        [8, '95#汽油', 10, 100, 100, 0, '回灌收款', 10, 100, 0, 0],
     ])
     sources.pop('油品优惠')
     first = SimpleReportProcessor(shift_config, count_divisor=1).build_updates(sources)['updates'][0]['cells']
-    assert first['B13'] == 2
-    assert first['D13'] == 63.33  # Settlement (100 + 90) / 3, not actual receipts.
+    assert first['B13'] == 3
+    assert first['D13'] == 91  # Actual receipts (93 + 90 + 90) / 3.
 
 
 @pytest.mark.parametrize('balance', [None, 'bad', 'NaN', 'Infinity'])
-def test_missing_or_invalid_card_balance_is_not_zero(sources, shift_config, balance):
+def test_no_card_does_not_validate_card_balance(sources, shift_config, balance):
     wb = openpyxl.load_workbook(sources['加油明细'])
     wb.active['J6'] = balance
     wb.save(sources['加油明细'])
-    with pytest.raises(ValueError, match='IC卡余额'):
-        SimpleReportProcessor(shift_config).build_updates(sources)
+    first = SimpleReportProcessor(shift_config).build_updates(sources)['updates'][0]['cells']
+    assert first['D13'] == 96.67
 
 
-def test_card_balance_header_is_required(sources, shift_config):
+def test_card_balance_header_is_optional(sources, shift_config):
     wb = openpyxl.load_workbook(sources['加油明细'])
     wb.active.delete_cols(10)
     wb.save(sources['加油明细'])
-    with pytest.raises(ValueError, match='IC卡余额'):
-        SimpleReportProcessor(shift_config).build_updates(sources)
+    first = SimpleReportProcessor(shift_config).build_updates(sources)['updates'][0]['cells']
+    assert first['D13'] == 96.67
 
 
 @pytest.mark.parametrize('missing', [True, False])
-def test_actual_receipts_are_not_required_or_used(sources, shift_config, missing):
+def test_actual_receipts_are_required_for_no_card(sources, shift_config, missing):
     workbook = openpyxl.load_workbook(sources['加油明细'])
     if missing:
         workbook.active.delete_cols(9)
     else:
         workbook.active['I6'] = 'unused'
     workbook.save(sources['加油明细'])
+    with pytest.raises(ValueError, match='实收金额'):
+        SimpleReportProcessor(shift_config).build_updates(sources)
+
+
+def test_card_consumption_keeps_settlement_when_actual_receipts_differ(sources, shift_config):
+    workbook = openpyxl.load_workbook(sources['加油明细'])
+    workbook.active['I4'] = 'unused'
+    workbook.active['I5'] = 'unused'
+    workbook.save(sources['加油明细'])
     first = SimpleReportProcessor(shift_config).build_updates(sources)['updates'][0]['cells']
-    assert (first['D11'], first['D12'], first['D13']) == (164, 86, 100)
+    assert (first['D11'], first['D12'], first['D13']) == (164, 86, 96.67)
 
 
 def test_multiple_fuel_prices_require_split_period(sources, shift_config):
@@ -390,9 +415,9 @@ def test_multiple_fuel_prices_require_split_period(sources, shift_config):
 @pytest.mark.parametrize('value,expected', [('608377.84', 202792.61), ('0', 0), ('', None)])
 def test_only_requested_balance_cell(sources, shift_config, value, expected):
     first = SimpleReportProcessor(shift_config, closing_balance=value).build_updates(sources)['updates'][0]['cells']
-    assert first.get('G7') == expected
-    assert ('G7' in first) == (expected is not None)
-    assert all(cell not in first for cell in ['G8', 'H8', 'I8', 'J8', 'B10', 'D10'])
+    assert first.get('G8') == expected
+    assert ('G8' in first) == (expected is not None)
+    assert all(cell not in first for cell in ['G7', 'H8', 'I8', 'J8', 'B10', 'D10'])
 
 
 @pytest.mark.parametrize('value', ['NaN', 'Infinity', 'bad'])
@@ -402,7 +427,7 @@ def test_invalid_balance(shift_config, value):
 
 
 def test_verified_oct20_sample(tmp_path, shift_config):
-    """Keep the verified baseline, except the user's later D13 settlement correction."""
+    """Keep the verified baseline, including the restored actual-receipts rule."""
     base = Path(__file__).resolve().parents[1] / '.context/attachments'
     paths = {'油品时间统计': base / 'H08NC1/1(5).xlsx',
              '加油明细': base / 'cCDPeT/3(5).xlsx',
@@ -417,8 +442,8 @@ def test_verified_oct20_sample(tmp_path, shift_config):
     addresses += ['B8', 'D8', 'B9', 'D9', 'D11', 'B12', 'D12', 'B13']
     for address in addresses:
         assert first[address] == expected['Sheet1'][address].value, address
-    assert expected['Sheet1']['D13'].value == 1550.99  # Original sample used actual receipts.
-    assert first['D13'] == 1586.33  # User now requires settlement: 4759 / 3.
+    assert expected['Sheet1']['D13'].value == 1550.99
+    assert first['D13'] == 1550.99
     addresses.append('D13')
     expected.close()
     # Exercise save/reopen/idempotence and preserve every cell outside the update batch.
